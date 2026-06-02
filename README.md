@@ -1,7 +1,7 @@
 # Augur
 
-Augur is a Go research prototype for routing LLM inference requests across a
-fleet of backends.
+Augur is a Go inference routing engine for sending LLM requests across a fleet
+of backends.
 
 It treats model serving as a routing and learning problem:
 
@@ -16,7 +16,7 @@ mock backends, not real paid model calls.
 
 ## Status
 
-Augur is a v0 research prototype.
+Augur is a v0 inference routing engine.
 
 It has the core pieces in place:
 
@@ -32,8 +32,10 @@ It has the core pieces in place:
 - sampled judge scorer with mocked tests
 - LiteLLM-style and Envoy-style local router shims
 
-It is not a production gateway yet. It does not include a public HTTP server,
-auth layer, config loader, real deployment recipes, or tuned production defaults.
+The core router, policy, learning, replay, and adapter pieces are built. It is
+not yet packaged as a production HTTP gateway, so it does not include a public
+HTTP server, auth layer, config loader, real deployment recipes, or tuned
+production defaults.
 
 ## Requirements
 
