@@ -33,6 +33,7 @@ type App struct {
 	Learning  Learning             `json:"learning"`
 	Pricing   Pricing              `json:"pricing"`
 	Canary    Canary               `json:"canary"`
+	Tenants   Tenants              `json:"tenants"`
 	Policy    control.PolicyConfig `json:"policy"`
 	Budgets   Budgets              `json:"budgets"`
 }
@@ -139,6 +140,27 @@ type Canary struct {
 	MaxErrorRate       float64 `json:"max_error_rate"`
 	MinQuality         float64 `json:"min_quality"`
 	MinSamples         int     `json:"min_samples"`
+}
+
+type Tenants struct {
+	Header        string            `json:"header"`
+	DefaultTenant string            `json:"default_tenant"`
+	Defaults      Tenant            `json:"defaults"`
+	Overrides     map[string]Tenant `json:"overrides"`
+}
+
+type Tenant struct {
+	MaxInFlight int64        `json:"max_in_flight"`
+	MaxCostUSD  float64      `json:"max_cost_usd"`
+	Policy      TenantPolicy `json:"policy"`
+}
+
+type TenantPolicy struct {
+	LatencyBudgetMs     int      `json:"latency_budget_ms"`
+	CostBudgetUSD       float64  `json:"cost_budget_usd"`
+	MaxCompletionTokens int      `json:"max_completion_tokens"`
+	Temperature         *float64 `json:"temperature"`
+	UserTier            string   `json:"user_tier"`
 }
 
 type Budgets struct {
@@ -307,6 +329,25 @@ func (a App) withDefaults() (App, error) {
 	if a.DataPlane.Hedge.MaxExtraCalls < 0 {
 		return App{}, errors.New("data_plane hedge max_extra_calls cannot be negative")
 	}
+	a.Tenants.Header = strings.TrimSpace(a.Tenants.Header)
+	if a.Tenants.Header == "" {
+		a.Tenants.Header = "X-Augur-Tenant"
+	}
+	a.Tenants.DefaultTenant = strings.TrimSpace(a.Tenants.DefaultTenant)
+	if a.Tenants.DefaultTenant == "" {
+		a.Tenants.DefaultTenant = "default"
+	}
+	if err := validateTenant(a.Tenants.DefaultTenant, a.Tenants.Defaults); err != nil {
+		return App{}, err
+	}
+	for tenant, config := range a.Tenants.Overrides {
+		if strings.TrimSpace(tenant) == "" {
+			return App{}, errors.New("tenant override name cannot be empty")
+		}
+		if err := validateTenant(tenant, config); err != nil {
+			return App{}, err
+		}
+	}
 	if a.Learning.QueueSize <= 0 {
 		a.Learning.QueueSize = 1024
 	}
@@ -340,6 +381,25 @@ func (c Canary) RollbackConfig() control.RollbackConfig {
 	}
 }
 
+func validateTenant(name string, tenant Tenant) error {
+	if tenant.MaxInFlight < 0 {
+		return fmt.Errorf("tenant %q max_in_flight cannot be negative", name)
+	}
+	if tenant.MaxCostUSD < 0 {
+		return fmt.Errorf("tenant %q max_cost_usd cannot be negative", name)
+	}
+	if tenant.Policy.LatencyBudgetMs < 0 {
+		return fmt.Errorf("tenant %q policy latency_budget_ms cannot be negative", name)
+	}
+	if tenant.Policy.CostBudgetUSD < 0 {
+		return fmt.Errorf("tenant %q policy cost_budget_usd cannot be negative", name)
+	}
+	if tenant.Policy.MaxCompletionTokens < 0 {
+		return fmt.Errorf("tenant %q policy max_completion_tokens cannot be negative", name)
+	}
+	return nil
+}
+
 func (a *App) applyPricingTable() {
 	for i := range a.Backends {
 		price, ok := a.Pricing.Models[a.Backends[i].Model]
@@ -367,7 +427,7 @@ func validateRouter(name string) error {
 func validateFilters(filters []string) error {
 	for _, name := range filters {
 		switch name {
-		case "health", "circuit", "concurrency":
+		case "health", "circuit", "concurrency", "tenant":
 		default:
 			return fmt.Errorf("unsupported filter %q", name)
 		}

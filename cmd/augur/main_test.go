@@ -200,8 +200,14 @@ func TestBuildRouterCanBuildBandit(t *testing.T) {
 func TestBuildFiltersFromConfig(t *testing.T) {
 	config := appconfig.App{
 		DataPlane: appconfig.DataPlane{
-			Filters: []string{"health", "circuit", "concurrency"},
+			Filters: []string{"health", "circuit", "concurrency", "tenant"},
 			Health:  map[core.BackendID]bool{"b": false},
+		},
+		Tenants: appconfig.Tenants{
+			DefaultTenant: "default",
+			Defaults: appconfig.Tenant{
+				MaxInFlight: 1,
+			},
 		},
 	}
 
@@ -209,12 +215,15 @@ func TestBuildFiltersFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build filters: %v", err)
 	}
-	if len(filters) != 3 {
+	if len(filters) != 4 {
 		t.Fatalf("filters got %d", len(filters))
 	}
 	candidates := filters[0].Apply(core.Request{ID: "req-1"}, []core.BackendID{"a", "b"})
 	if len(candidates) != 1 || candidates[0] != "a" {
 		t.Fatalf("health candidates got %v", candidates)
+	}
+	if filters[3].Name() != "tenant" {
+		t.Fatalf("tenant filter got %s", filters[3].Name())
 	}
 }
 
@@ -232,6 +241,81 @@ func TestRequestDefaultsFromConfig(t *testing.T) {
 	}
 	if defaults.Temperature == nil || *defaults.Temperature != 0.3 {
 		t.Fatalf("temperature got %v", defaults.Temperature)
+	}
+}
+
+func TestTenantRequestDefaultsFromConfig(t *testing.T) {
+	temperature := 0.1
+	defaults := tenantRequestDefaults(appconfig.App{
+		Tenants: appconfig.Tenants{
+			DefaultTenant: "default",
+			Defaults: appconfig.Tenant{
+				Policy: appconfig.TenantPolicy{
+					UserTier: "standard",
+				},
+			},
+			Overrides: map[string]appconfig.Tenant{
+				"premium": {
+					Policy: appconfig.TenantPolicy{
+						LatencyBudgetMs:     800,
+						CostBudgetUSD:       0.03,
+						MaxCompletionTokens: 256,
+						Temperature:         &temperature,
+						UserTier:            "premium",
+					},
+				},
+			},
+		},
+	})
+
+	if defaults["default"].UserTier != "standard" {
+		t.Fatalf("default tenant policy got %+v", defaults["default"])
+	}
+	premium := defaults["premium"]
+	if premium.LatencyBudgetMs != 800 || premium.CostBudgetUSD != 0.03 || premium.MaxCompletionTokens != 256 {
+		t.Fatalf("premium tenant defaults got %+v", premium)
+	}
+	if premium.Temperature == nil || *premium.Temperature != 0.1 || premium.UserTier != "premium" {
+		t.Fatalf("premium tenant defaults got %+v", premium)
+	}
+}
+
+func TestTenantLimitConfigFromConfig(t *testing.T) {
+	config := tenantLimitConfig(appconfig.Tenants{
+		DefaultTenant: "default",
+		Defaults: appconfig.Tenant{
+			MaxInFlight: 4,
+			MaxCostUSD:  1.5,
+		},
+		Overrides: map[string]appconfig.Tenant{
+			"premium": {
+				MaxInFlight: 8,
+				MaxCostUSD:  3.0,
+			},
+		},
+	})
+
+	if config.DefaultTenant != "default" || config.Defaults.MaxInFlight != 4 || config.Defaults.MaxCostUSD != 1.5 {
+		t.Fatalf("tenant limit config got %+v", config)
+	}
+	if config.Tenants["premium"].MaxInFlight != 8 || config.Tenants["premium"].MaxCostUSD != 3.0 {
+		t.Fatalf("tenant override got %+v", config.Tenants["premium"])
+	}
+}
+
+func TestBuildSingleFlightScopesKeysByTenant(t *testing.T) {
+	_, key := buildSingleFlight(appconfig.SingleFlight{
+		Enabled: true,
+		Key:     "prompt",
+	})
+	if key == nil {
+		t.Fatal("single flight key should be set")
+	}
+
+	first := key(core.Request{TenantID: "tenant-a", Prompt: "same"})
+	second := key(core.Request{TenantID: "tenant-b", Prompt: "same"})
+	if first == second {
+		t.Fatalf("tenant scoped keys matched: %q", first)
 	}
 }
 

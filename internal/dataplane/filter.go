@@ -7,13 +7,13 @@ type Release func()
 type Filter interface {
 	Name() string
 	Apply(req core.Request, candidates []core.BackendID) []core.BackendID
-	Acquire(id core.BackendID) (Release, bool)
+	Acquire(req core.Request, id core.BackendID) (Release, bool)
 	Observe(id core.BackendID, resp core.Response, err error)
 }
 
 type filterBase struct{}
 
-func (filterBase) Acquire(core.BackendID) (Release, bool) {
+func (filterBase) Acquire(core.Request, core.BackendID) (Release, bool) {
 	return func() {}, true
 }
 

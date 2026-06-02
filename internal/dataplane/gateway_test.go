@@ -157,11 +157,11 @@ func TestAdaptiveLimiterShedsAndAdjustsLimit(t *testing.T) {
 		TargetLatencyMs: 100,
 	})
 
-	release, ok := limiter.Acquire("a")
+	release, ok := limiter.Acquire(core.Request{ID: "req-1"}, "a")
 	if !ok {
 		t.Fatal("first request should be admitted")
 	}
-	if _, ok := limiter.Acquire("a"); ok {
+	if _, ok := limiter.Acquire(core.Request{ID: "req-2"}, "a"); ok {
 		t.Fatal("second request should be shed at limit one")
 	}
 	release()
@@ -174,6 +174,142 @@ func TestAdaptiveLimiterShedsAndAdjustsLimit(t *testing.T) {
 	limiter.Observe("a", core.Response{Backend: "a", Outcome: core.Outcome{LatencyMs: 500}}, nil)
 	if limiter.Limit("a") != 1 {
 		t.Fatalf("slow response should lower the limit to 1, got %d", limiter.Limit("a"))
+	}
+}
+
+func TestTenantLimiterIsolatesCounters(t *testing.T) {
+	limiter := NewTenantLimiter(TenantLimitConfig{
+		DefaultTenant: "default",
+		Defaults: TenantLimit{
+			MaxInFlight: 1,
+			MaxCostUSD:  0.10,
+		},
+		Tenants: map[string]TenantLimit{
+			"tenant-b": {
+				MaxInFlight: 2,
+				MaxCostUSD:  0.20,
+			},
+		},
+	})
+
+	releaseA, ok := limiter.Acquire(core.Request{ID: "a-1", TenantID: "tenant-a"}, "backend")
+	if !ok {
+		t.Fatal("first tenant-a request should be admitted")
+	}
+	if _, ok := limiter.Acquire(core.Request{ID: "a-2", TenantID: "tenant-a"}, "backend"); ok {
+		t.Fatal("tenant-a should hit its own in-flight limit")
+	}
+	releaseB1, ok := limiter.Acquire(core.Request{ID: "b-1", TenantID: "tenant-b"}, "backend")
+	if !ok {
+		t.Fatal("first tenant-b request should be admitted")
+	}
+	releaseB2, ok := limiter.Acquire(core.Request{ID: "b-2", TenantID: "tenant-b"}, "backend")
+	if !ok {
+		t.Fatal("tenant-b override should allow a second in-flight request")
+	}
+
+	limiter.Observe("backend", core.Response{TenantID: "tenant-a", Outcome: core.Outcome{CostUSD: 0.03}}, nil)
+	limiter.Observe("backend", core.Response{TenantID: "tenant-b", Outcome: core.Outcome{CostUSD: 0.04}}, nil)
+
+	if limiter.CostUSD("tenant-a") != 0.03 {
+		t.Fatalf("tenant-a cost got %.2f", limiter.CostUSD("tenant-a"))
+	}
+	if limiter.CostUSD("tenant-b") != 0.04 {
+		t.Fatalf("tenant-b cost got %.2f", limiter.CostUSD("tenant-b"))
+	}
+
+	releaseA()
+	releaseB1()
+	releaseB2()
+}
+
+func TestTenantLimiterUsesDefaultTenant(t *testing.T) {
+	limiter := NewTenantLimiter(TenantLimitConfig{
+		DefaultTenant: "default",
+		Defaults: TenantLimit{
+			MaxInFlight: 1,
+		},
+	})
+
+	release, ok := limiter.Acquire(core.Request{ID: "req-1"}, "backend")
+	if !ok {
+		t.Fatal("default tenant request should be admitted")
+	}
+	if limiter.InFlight("default") != 1 {
+		t.Fatalf("default tenant in-flight got %d", limiter.InFlight("default"))
+	}
+	if _, ok := limiter.Acquire(core.Request{ID: "req-2"}, "backend"); ok {
+		t.Fatal("default tenant should hit its own in-flight limit")
+	}
+	release()
+}
+
+func TestGatewayRejectsTenantRequestLimit(t *testing.T) {
+	tenantLimiter := NewTenantLimiter(TenantLimitConfig{
+		DefaultTenant: "default",
+		Defaults: TenantLimit{
+			MaxInFlight: 1,
+		},
+	})
+	model := &fakeBackend{id: "a", delay: 50 * time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{model},
+		Filters:  []Filter{tenantLimiter},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, callErr := gateway.Call(context.Background(), core.Request{ID: "req-1", TenantID: "tenant-a"})
+		firstErr <- callErr
+	}()
+	waitFor(t, func() bool {
+		return model.calls.Load() == 1
+	})
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req-2", TenantID: "tenant-a"})
+	if !errors.Is(err, ErrLoadShed) {
+		t.Fatalf("tenant request limit error got %v", err)
+	}
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+}
+
+func TestGatewayRejectsTenantCostLimit(t *testing.T) {
+	tenantLimiter := NewTenantLimiter(TenantLimitConfig{
+		DefaultTenant: "default",
+		Defaults: TenantLimit{
+			MaxCostUSD: 0.01,
+		},
+	})
+	model := &fakeBackend{
+		id: "a",
+		response: core.Response{
+			Outcome: core.Outcome{
+				CostUSD: 0.02,
+			},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{model},
+		Filters:  []Filter{tenantLimiter},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req-1", TenantID: "tenant-a"})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req-2", TenantID: "tenant-a"})
+	if !errors.Is(err, ErrLoadShed) {
+		t.Fatalf("tenant cost limit error got %v", err)
 	}
 }
 
@@ -204,11 +340,11 @@ func TestCircuitBreakerHalfOpenProbe(t *testing.T) {
 	if got := circuit.Apply(core.Request{ID: "req"}, []core.BackendID{"a"}); len(got) != 1 {
 		t.Fatalf("after recovery delay one probe should be eligible, got %v", got)
 	}
-	release, ok := circuit.Acquire("a")
+	release, ok := circuit.Acquire(core.Request{ID: "req-1"}, "a")
 	if !ok {
 		t.Fatal("half-open probe should be admitted")
 	}
-	if _, ok := circuit.Acquire("a"); ok {
+	if _, ok := circuit.Acquire(core.Request{ID: "req-2"}, "a"); ok {
 		t.Fatal("second half-open probe should be blocked")
 	}
 	release()
@@ -490,7 +626,7 @@ func TestGatewayStreamReleasesLimiterAfterDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	if _, ok := limiter.Acquire("a"); ok {
+	if _, ok := limiter.Acquire(core.Request{ID: "req-2"}, "a"); ok {
 		t.Fatal("stream should hold limiter slot")
 	}
 	stream.Recv()

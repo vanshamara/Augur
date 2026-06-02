@@ -55,6 +55,7 @@ client
 - health filtering
 - circuit breaking
 - adaptive concurrency
+- tenant request and cost limits
 - hedging
 - single flight
 
@@ -87,7 +88,6 @@ Current limits:
 
 - JSON and YAML config only
 - no deployment package or container image in this repo
-- no multi-tenant quota system yet
 
 Those limits are intentional for now. The core router, learning loop, adapter,
 config loader, persistence, and tests are already in place.

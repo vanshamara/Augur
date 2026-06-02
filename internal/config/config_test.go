@@ -58,6 +58,30 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"min_quality": 0.80,
 			"min_samples": 40
 		},
+		"tenants": {
+			"header": "X-Augur-Tenant",
+			"default_tenant": "default",
+			"defaults": {
+				"max_in_flight": 8,
+				"max_cost_usd": 10.0,
+				"policy": {
+					"user_tier": "standard"
+				}
+			},
+			"overrides": {
+				"premium": {
+					"max_in_flight": 16,
+					"max_cost_usd": 25.0,
+					"policy": {
+						"latency_budget_ms": 900,
+						"cost_budget_usd": 0.02,
+						"max_completion_tokens": 512,
+						"temperature": 0.1,
+						"user_tier": "premium"
+					}
+				}
+			}
+		},
 		"policy": {
 			"id": "prod",
 			"constraints": {"max_p95_ms": 1200, "min_quality": 0.85, "max_error_rate": 0.02, "quality_gate": "lcb"},
@@ -102,6 +126,15 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Canary.P95RegressionRatio != 0.25 || config.Canary.MaxErrorRate != 0.03 || config.Canary.MinSamples != 40 {
 		t.Fatalf("canary got %+v", config.Canary)
+	}
+	if config.Tenants.Header != "X-Augur-Tenant" || config.Tenants.DefaultTenant != "default" {
+		t.Fatalf("tenant identity got %+v", config.Tenants)
+	}
+	if config.Tenants.Defaults.MaxInFlight != 8 || config.Tenants.Defaults.MaxCostUSD != 10.0 {
+		t.Fatalf("tenant defaults got %+v", config.Tenants.Defaults)
+	}
+	if config.Tenants.Overrides["premium"].Policy.UserTier != "premium" {
+		t.Fatalf("tenant override got %+v", config.Tenants.Overrides["premium"])
 	}
 	if config.Policy.Objective.Type != control.BlendObjective || config.Policy.Constraints.QualityGate != control.GateOnLCB {
 		t.Fatalf("policy got %+v", config.Policy)
@@ -149,6 +182,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 	if config.Learning.Persistence.SaveEvery != 1 {
 		t.Fatalf("persistence save every got %d", config.Learning.Persistence.SaveEvery)
+	}
+	if config.Tenants.Header != "X-Augur-Tenant" || config.Tenants.DefaultTenant != "default" {
+		t.Fatalf("tenant defaults got %+v", config.Tenants)
 	}
 	if config.Backends[0].ID != "model-a" {
 		t.Fatalf("backend id got %q", config.Backends[0].ID)
@@ -296,6 +332,24 @@ canary:
   max_error_rate: 0.03
   min_quality: 0.80
   min_samples: 40
+tenants:
+  header: "X-Augur-Tenant"
+  default_tenant: "default"
+  defaults:
+    max_in_flight: 8
+    max_cost_usd: 10.0
+    policy:
+      user_tier: "standard"
+  overrides:
+    premium:
+      max_in_flight: 16
+      max_cost_usd: 25.0
+      policy:
+        latency_budget_ms: 900
+        cost_budget_usd: 0.02
+        max_completion_tokens: 512
+        temperature: 0.1
+        user_tier: "premium"
 policy:
   id: "prod"
   constraints:
@@ -341,6 +395,9 @@ budgets:
 	}
 	if config.Canary.P95RegressionRatio != 0.25 || config.Canary.MinSamples != 40 {
 		t.Fatalf("canary got %+v", config.Canary)
+	}
+	if config.Tenants.Overrides["premium"].MaxInFlight != 16 {
+		t.Fatalf("tenant override got %+v", config.Tenants.Overrides["premium"])
 	}
 	if !config.Learning.Persistence.Enabled || config.Learning.Persistence.SaveEvery != 4 {
 		t.Fatalf("persistence got %+v", config.Learning.Persistence)
@@ -435,6 +492,20 @@ func TestParseRejectsInvalidHedgeTriggerPercentile(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"hedge":{"trigger_percentile":101}}}`))
 	if err == nil {
 		t.Fatal("bad hedge trigger percentile should fail")
+	}
+}
+
+func TestParseRejectsNegativeTenantLimit(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"tenants":{"defaults":{"max_in_flight":-1}}}`))
+	if err == nil {
+		t.Fatal("negative tenant limit should fail")
+	}
+}
+
+func TestParseRejectsEmptyTenantOverride(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"tenants":{"overrides":{"":{"max_in_flight":1}}}}`))
+	if err == nil {
+		t.Fatal("empty tenant override should fail")
 	}
 }
 

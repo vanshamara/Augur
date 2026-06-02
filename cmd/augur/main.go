@@ -83,10 +83,13 @@ func run(ctx context.Context, getenv func(string) string) error {
 	defer closeGateway(servingGateway)
 
 	apiServer, err := httpapi.New(httpapi.Config{
-		Gateway:      servingGateway,
-		AuthKeys:     gatewayAuthKeys(getenv),
-		Defaults:     requestDefaults(config.Budgets),
-		MaxBodyBytes: config.Server.MaxBodyBytes,
+		Gateway:        servingGateway,
+		AuthKeys:       gatewayAuthKeys(getenv),
+		Defaults:       requestDefaults(config.Budgets),
+		TenantHeader:   config.Tenants.Header,
+		DefaultTenant:  config.Tenants.DefaultTenant,
+		TenantDefaults: tenantRequestDefaults(config),
+		MaxBodyBytes:   config.Server.MaxBodyBytes,
 		Ready: func(ctx context.Context) bool {
 			return len(backends) > 0
 		},
@@ -294,6 +297,8 @@ func buildFilters(config appconfig.App, ids []core.BackendID) ([]dataplane.Filte
 				MaxLimit:        config.DataPlane.Concurrency.MaxLimit,
 				TargetLatencyMs: config.DataPlane.Concurrency.TargetLatencyMs,
 			}))
+		case "tenant":
+			filters = append(filters, dataplane.NewTenantLimiter(tenantLimitConfig(config.Tenants)))
 		default:
 			return nil, fmt.Errorf("unsupported filter %q", name)
 		}
@@ -319,15 +324,26 @@ func buildSingleFlight(config appconfig.SingleFlight) (*dataplane.SingleFlight, 
 	switch config.Key {
 	case "prompt":
 		return dataplane.NewSingleFlight(), func(req core.Request) string {
-			return req.Prompt
+			return tenantScopedKey(req, req.Prompt)
 		}
 	case "request_id":
 		return dataplane.NewSingleFlight(), func(req core.Request) string {
-			return req.ID
+			return tenantScopedKey(req, req.ID)
 		}
 	default:
 		return nil, nil
 	}
+}
+
+func tenantScopedKey(req core.Request, value string) string {
+	if value == "" {
+		return ""
+	}
+	tenant := req.TenantID
+	if tenant == "" {
+		tenant = "default"
+	}
+	return tenant + "\x00" + value
 }
 
 func requestDefaults(config appconfig.Budgets) httpapi.RequestDefaults {
@@ -336,6 +352,49 @@ func requestDefaults(config appconfig.Budgets) httpapi.RequestDefaults {
 		CostBudgetUSD:       config.CostBudgetUSD,
 		MaxCompletionTokens: config.MaxCompletionTokens,
 		Temperature:         config.Temperature,
+	}
+}
+
+func tenantRequestDefaults(config appconfig.App) map[string]httpapi.RequestDefaults {
+	out := map[string]httpapi.RequestDefaults{}
+	defaults := tenantPolicyDefaults(config.Tenants.Defaults.Policy)
+	if !defaults.Empty() {
+		out[config.Tenants.DefaultTenant] = defaults
+	}
+	for tenant, spec := range config.Tenants.Overrides {
+		defaults := tenantPolicyDefaults(spec.Policy)
+		if !defaults.Empty() {
+			out[tenant] = defaults
+		}
+	}
+	return out
+}
+
+func tenantPolicyDefaults(config appconfig.TenantPolicy) httpapi.RequestDefaults {
+	return httpapi.RequestDefaults{
+		LatencyBudgetMs:     config.LatencyBudgetMs,
+		CostBudgetUSD:       config.CostBudgetUSD,
+		MaxCompletionTokens: config.MaxCompletionTokens,
+		Temperature:         config.Temperature,
+		UserTier:            config.UserTier,
+	}
+}
+
+func tenantLimitConfig(config appconfig.Tenants) dataplane.TenantLimitConfig {
+	limits := make(map[string]dataplane.TenantLimit, len(config.Overrides))
+	for tenant, spec := range config.Overrides {
+		limits[tenant] = dataplane.TenantLimit{
+			MaxInFlight: spec.MaxInFlight,
+			MaxCostUSD:  spec.MaxCostUSD,
+		}
+	}
+	return dataplane.TenantLimitConfig{
+		DefaultTenant: config.DefaultTenant,
+		Defaults: dataplane.TenantLimit{
+			MaxInFlight: config.Defaults.MaxInFlight,
+			MaxCostUSD:  config.Defaults.MaxCostUSD,
+		},
+		Tenants: limits,
 	}
 }
 

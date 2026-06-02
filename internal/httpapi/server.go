@@ -28,13 +28,16 @@ type StreamingGateway interface {
 type ReadyFunc func(ctx context.Context) bool
 
 type Config struct {
-	Gateway      Gateway
-	Now          func() time.Time
-	NewID        func() string
-	Ready        ReadyFunc
-	AuthKeys     []string
-	Defaults     RequestDefaults
-	MaxBodyBytes int64
+	Gateway        Gateway
+	Now            func() time.Time
+	NewID          func() string
+	Ready          ReadyFunc
+	AuthKeys       []string
+	Defaults       RequestDefaults
+	TenantHeader   string
+	DefaultTenant  string
+	TenantDefaults map[string]RequestDefaults
+	MaxBodyBytes   int64
 }
 
 type RequestDefaults struct {
@@ -42,17 +45,21 @@ type RequestDefaults struct {
 	CostBudgetUSD       float64
 	MaxCompletionTokens int
 	Temperature         *float64
+	UserTier            string
 }
 
 type Server struct {
-	gateway      Gateway
-	now          func() time.Time
-	newID        func() string
-	ready        ReadyFunc
-	authKeys     []string
-	defaults     RequestDefaults
-	maxBodyBytes int64
-	mux          *http.ServeMux
+	gateway        Gateway
+	now            func() time.Time
+	newID          func() string
+	ready          ReadyFunc
+	authKeys       []string
+	defaults       RequestDefaults
+	tenantHeader   string
+	defaultTenant  string
+	tenantDefaults map[string]RequestDefaults
+	maxBodyBytes   int64
+	mux            *http.ServeMux
 }
 
 func New(config Config) (*Server, error) {
@@ -74,15 +81,26 @@ func New(config Config) (*Server, error) {
 	if config.MaxBodyBytes == 0 {
 		config.MaxBodyBytes = 1_048_576
 	}
+	config.TenantHeader = strings.TrimSpace(config.TenantHeader)
+	if config.TenantHeader == "" {
+		config.TenantHeader = "X-Augur-Tenant"
+	}
+	config.DefaultTenant = strings.TrimSpace(config.DefaultTenant)
+	if config.DefaultTenant == "" {
+		config.DefaultTenant = "default"
+	}
 
 	server := &Server{
-		gateway:      config.Gateway,
-		now:          config.Now,
-		newID:        config.NewID,
-		ready:        config.Ready,
-		authKeys:     cleanAuthKeys(config.AuthKeys),
-		defaults:     config.Defaults,
-		maxBodyBytes: config.MaxBodyBytes,
+		gateway:        config.Gateway,
+		now:            config.Now,
+		newID:          config.NewID,
+		ready:          config.Ready,
+		authKeys:       cleanAuthKeys(config.AuthKeys),
+		defaults:       config.Defaults,
+		tenantHeader:   config.TenantHeader,
+		defaultTenant:  config.DefaultTenant,
+		tenantDefaults: cleanTenantDefaults(config.TenantDefaults),
+		maxBodyBytes:   config.MaxBodyBytes,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealth)
@@ -170,7 +188,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := body.coreRequest(requestID(r), s.newID(), s.defaults)
+	tenantID := s.tenantID(r)
+	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID))
 	resp, err := s.gateway.Call(r.Context(), req)
 	if err != nil {
 		writeGatewayError(w, err)
@@ -192,7 +211,8 @@ func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	req := body.coreRequest(requestID(r), s.newID(), s.defaults)
+	tenantID := s.tenantID(r)
+	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID))
 	stream, err := gateway.Stream(r.Context(), req)
 	if err != nil {
 		writeGatewayError(w, err)
@@ -261,7 +281,7 @@ func (r chatCompletionRequest) validate() error {
 	return nil
 }
 
-func (r chatCompletionRequest) coreRequest(id string, fallbackID string, defaults RequestDefaults) core.Request {
+func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantID string, defaults RequestDefaults) core.Request {
 	if id == "" {
 		id = fallbackID
 	}
@@ -272,6 +292,7 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, default
 	prompt := flattenMessages(messages)
 	return core.Request{
 		ID:                  id,
+		TenantID:            tenantID,
 		Prompt:              prompt,
 		Messages:            messages,
 		MaxCompletionTokens: r.maxCompletionTokens(defaults.MaxCompletionTokens),
@@ -281,6 +302,7 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, default
 			Type:            core.Chat,
 			LatencyBudgetMs: defaults.LatencyBudgetMs,
 			CostBudget:      defaults.CostBudgetUSD,
+			UserTier:        defaults.UserTier,
 		},
 	}
 }
@@ -486,6 +508,61 @@ func cleanAuthKeys(keys []string) []string {
 		}
 	}
 	return out
+}
+
+func cleanTenantDefaults(defaults map[string]RequestDefaults) map[string]RequestDefaults {
+	out := make(map[string]RequestDefaults, len(defaults))
+	for tenant, value := range defaults {
+		tenant = strings.TrimSpace(tenant)
+		if tenant != "" && !value.Empty() {
+			out[tenant] = value
+		}
+	}
+	return out
+}
+
+func (s *Server) tenantID(r *http.Request) string {
+	tenant := strings.TrimSpace(r.Header.Get(s.tenantHeader))
+	if tenant == "" {
+		return s.defaultTenant
+	}
+	return tenant
+}
+
+func (s *Server) defaultsForTenant(tenant string) RequestDefaults {
+	defaults := s.defaults
+	override, ok := s.tenantDefaults[tenant]
+	if !ok {
+		return defaults
+	}
+	return defaults.withOverride(override)
+}
+
+func (d RequestDefaults) Empty() bool {
+	return d.LatencyBudgetMs == 0 &&
+		d.CostBudgetUSD == 0 &&
+		d.MaxCompletionTokens == 0 &&
+		d.Temperature == nil &&
+		d.UserTier == ""
+}
+
+func (d RequestDefaults) withOverride(override RequestDefaults) RequestDefaults {
+	if override.LatencyBudgetMs > 0 {
+		d.LatencyBudgetMs = override.LatencyBudgetMs
+	}
+	if override.CostBudgetUSD > 0 {
+		d.CostBudgetUSD = override.CostBudgetUSD
+	}
+	if override.MaxCompletionTokens > 0 {
+		d.MaxCompletionTokens = override.MaxCompletionTokens
+	}
+	if override.Temperature != nil {
+		d.Temperature = override.Temperature
+	}
+	if override.UserTier != "" {
+		d.UserTier = override.UserTier
+	}
+	return d
 }
 
 func bearerToken(value string) string {

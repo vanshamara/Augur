@@ -220,6 +220,39 @@ This means rollback is allowed when the canary has enough samples and any limit
 is breached: p95 is more than 20 percent worse than baseline, error rate is over
 2 percent, or quality is below 0.85.
 
+## Tenants
+
+Tenant identity comes from `X-Augur-Tenant` by default. Missing headers use the
+configured default tenant.
+
+```yaml
+data_plane:
+  filters: ["tenant", "health", "circuit", "concurrency"]
+
+tenants:
+  header: "X-Augur-Tenant"
+  default_tenant: "default"
+  defaults:
+    max_in_flight: 64
+    max_cost_usd: 100.0
+    policy:
+      user_tier: "standard"
+  overrides:
+    premium:
+      max_in_flight: 128
+      max_cost_usd: 250.0
+      policy:
+        latency_budget_ms: 900
+        cost_budget_usd: 0.02
+        max_completion_tokens: 768
+        user_tier: "premium"
+```
+
+`max_in_flight` limits active requests per tenant in this process. `max_cost_usd`
+limits observed spend since process start. Tenant `policy` values override
+request defaults such as latency budget, cost budget, max completion tokens, and
+user tier.
+
 ## Server Limits
 
 The `server` block controls process-level HTTP safety settings:
@@ -258,4 +291,3 @@ These are still future work:
 
 - TLS config
 - container and Kubernetes manifests
-- multi-tenant limits

@@ -89,7 +89,7 @@ func (c *CircuitBreaker) Apply(req core.Request, candidates []core.BackendID) []
 	return out
 }
 
-func (c *CircuitBreaker) Acquire(id core.BackendID) (Release, bool) {
+func (c *CircuitBreaker) Acquire(req core.Request, id core.BackendID) (Release, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

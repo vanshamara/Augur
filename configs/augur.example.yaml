@@ -24,7 +24,7 @@ router:
   alpha: 0.2
   p2c_window: 64
 data_plane:
-  filters: ["health", "circuit", "concurrency"]
+  filters: ["tenant", "health", "circuit", "concurrency"]
   circuit:
     failure_threshold: 3
     recovery_after: "2s"
@@ -62,6 +62,23 @@ canary:
   max_error_rate: 0.02
   min_quality: 0.85
   min_samples: 20
+tenants:
+  header: "X-Augur-Tenant"
+  default_tenant: "default"
+  defaults:
+    max_in_flight: 16
+    max_cost_usd: 10.0
+    policy:
+      user_tier: "standard"
+  overrides:
+    premium:
+      max_in_flight: 32
+      max_cost_usd: 25.0
+      policy:
+        latency_budget_ms: 900
+        cost_budget_usd: 0.02
+        max_completion_tokens: 768
+        user_tier: "premium"
 policy:
   id: "default"
   constraints:

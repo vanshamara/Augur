@@ -26,6 +26,7 @@ type Message struct {
 
 type Request struct {
 	ID                  string
+	TenantID            string
 	Prompt              string
 	Messages            []Message
 	MaxCompletionTokens int
@@ -45,6 +46,7 @@ type Outcome struct {
 // Response is an Outcome tagged with the backend that produced it.
 type Response struct {
 	RequestID  string
+	TenantID   string
 	Backend    BackendID
 	OutputText string
 	Outcome
@@ -52,6 +54,7 @@ type Response struct {
 
 type StreamChunk struct {
 	RequestID string
+	TenantID  string
 	Backend   BackendID
 	Delta     string
 	Done      bool

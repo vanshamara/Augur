@@ -359,9 +359,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	)
 	defer span.End()
 
-	release, ok := g.acquire(id)
+	release, ok := g.acquire(req, id)
 	if !ok {
-		resp := core.Response{RequestID: req.ID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		return resp, ErrLoadShed
 	}
@@ -369,7 +369,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 
 	b := g.backends[id]
 	if b == nil {
-		resp := core.Response{RequestID: req.ID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		return resp, ErrMissing
 	}
@@ -377,6 +377,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	resp, err := b.Call(ctx, req)
 	if resp.RequestID == "" {
 		resp.RequestID = req.ID
+	}
+	if resp.TenantID == "" {
+		resp.TenantID = req.TenantID
 	}
 	if resp.Backend == "" {
 		resp.Backend = id
@@ -397,9 +400,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 }
 
 func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID) (core.Stream, error) {
-	release, ok := g.acquire(id)
+	release, ok := g.acquire(req, id)
 	if !ok {
-		resp := core.Response{RequestID: req.ID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		return nil, ErrLoadShed
 	}
@@ -407,14 +410,14 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	b := g.backends[id]
 	if b == nil {
 		release()
-		resp := core.Response{RequestID: req.ID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		return nil, ErrMissing
 	}
 	streamBackend, ok := b.(backend.StreamBackend)
 	if !ok {
 		release()
-		resp := core.Response{RequestID: req.ID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrStreaming)
 		return nil, ErrStreaming
 	}
@@ -422,7 +425,7 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	stream, err := streamBackend.Stream(ctx, req)
 	if err != nil {
 		release()
-		resp := core.Response{RequestID: req.ID, Backend: id, Outcome: core.Outcome{Errored: true}}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id, Outcome: core.Outcome{Errored: true}}
 		g.observeStreamResponse(ctx, id, resp, err)
 		return nil, err
 	}
@@ -464,12 +467,15 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	if chunk.RequestID == "" {
 		chunk.RequestID = s.req.ID
 	}
+	if chunk.TenantID == "" {
+		chunk.TenantID = s.req.TenantID
+	}
 	if chunk.Backend == "" {
 		chunk.Backend = s.id
 	}
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			resp := core.Response{RequestID: s.req.ID, Backend: s.id, Outcome: core.Outcome{Errored: true}}
+			resp := core.Response{RequestID: s.req.ID, TenantID: s.req.TenantID, Backend: s.id, Outcome: core.Outcome{Errored: true}}
 			s.observe(resp, err)
 		}
 		s.closeRelease()
@@ -478,6 +484,7 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	if chunk.Done {
 		resp := core.Response{
 			RequestID:  s.req.ID,
+			TenantID:   s.req.TenantID,
 			Backend:    s.id,
 			OutputText: "",
 			Outcome:    chunk.Outcome,
@@ -510,10 +517,10 @@ func (s *gatewayStream) closeRelease() {
 	s.release()
 }
 
-func (g *Gateway) acquire(id core.BackendID) (Release, bool) {
+func (g *Gateway) acquire(req core.Request, id core.BackendID) (Release, bool) {
 	releases := make([]Release, 0, len(g.filters))
 	for _, filter := range g.filters {
-		release, ok := filter.Acquire(id)
+		release, ok := filter.Acquire(req, id)
 		if !ok {
 			releaseAll(releases)
 			return nil, false

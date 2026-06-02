@@ -163,6 +163,92 @@ func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsUsesDefaultTenant(t *testing.T) {
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.TenantID != "default" {
+		t.Fatalf("tenant got %q", gateway.req.TenantID)
+	}
+}
+
+func TestChatCompletionsUsesTenantHeader(t *testing.T) {
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Augur-Tenant", "tenant-a")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.TenantID != "tenant-a" {
+		t.Fatalf("tenant got %q", gateway.req.TenantID)
+	}
+}
+
+func TestChatCompletionsAppliesTenantPolicyDefaults(t *testing.T) {
+	temperature := 0.1
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server, err := New(Config{
+		Gateway: gateway,
+		Defaults: RequestDefaults{
+			LatencyBudgetMs:     1200,
+			CostBudgetUSD:       0.01,
+			MaxCompletionTokens: 64,
+			UserTier:            "standard",
+		},
+		TenantDefaults: map[string]RequestDefaults{
+			"premium": {
+				LatencyBudgetMs:     800,
+				CostBudgetUSD:       0.03,
+				MaxCompletionTokens: 256,
+				Temperature:         &temperature,
+				UserTier:            "premium",
+			},
+		},
+		Now: func() time.Time {
+			return time.Unix(123, 0)
+		},
+		NewID: func() string {
+			return "chatcmpl-test"
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Augur-Tenant", "premium")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.Features.LatencyBudgetMs != 800 || gateway.req.Features.CostBudget != 0.03 {
+		t.Fatalf("tenant budgets got %+v", gateway.req.Features)
+	}
+	if gateway.req.MaxCompletionTokens != 256 || gateway.req.Features.UserTier != "premium" {
+		t.Fatalf("tenant defaults got request %+v features %+v", gateway.req, gateway.req.Features)
+	}
+	if gateway.req.Temperature == nil || *gateway.req.Temperature != 0.1 {
+		t.Fatalf("tenant temperature got %v", gateway.req.Temperature)
+	}
+}
+
 func TestChatCompletionsStreamsSSE(t *testing.T) {
 	gateway := &fakeGateway{
 		stream: &fakeStream{

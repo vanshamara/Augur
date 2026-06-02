@@ -69,7 +69,7 @@ func (l *AdaptiveLimiter) Apply(req core.Request, candidates []core.BackendID) [
 	return out
 }
 
-func (l *AdaptiveLimiter) Acquire(id core.BackendID) (Release, bool) {
+func (l *AdaptiveLimiter) Acquire(req core.Request, id core.BackendID) (Release, bool) {
 	state := l.states[id]
 	for {
 		current := state.inFlight.Load()

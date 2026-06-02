@@ -103,7 +103,7 @@ If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
 The current server supports JSON and YAML config files, non-streaming and
 streaming chat completions, health and readiness endpoints, live learning, and
-learned state persistence.
+learned state persistence, and per-tenant limits.
 
 Health checks:
 
@@ -135,6 +135,32 @@ data_plane:
 `budget_fraction` is the share of requests allowed to hedge.
 `trigger_percentile` uses recent backend latency to decide when to launch the
 backup call. `max_extra_calls` caps backup calls per request.
+
+Tenant limits use `X-Augur-Tenant` by default. Missing headers use the
+`default` tenant:
+
+```yaml
+tenants:
+  header: "X-Augur-Tenant"
+  default_tenant: "default"
+  defaults:
+    max_in_flight: 16
+    max_cost_usd: 10.0
+    policy:
+      user_tier: "standard"
+  overrides:
+    premium:
+      max_in_flight: 32
+      max_cost_usd: 25.0
+      policy:
+        latency_budget_ms: 900
+        cost_budget_usd: 0.02
+        max_completion_tokens: 768
+        user_tier: "premium"
+```
+
+Add `"tenant"` to `data_plane.filters` to enforce tenant request and cost
+limits.
 
 Public config examples:
 
@@ -249,5 +275,4 @@ The next phase is packaging and hardening:
 
 - production HTTP hardening
 - pricing data upkeep
-- multi-tenant limits
 - stronger production safety checks
