@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,10 @@ import (
 
 type Gateway interface {
 	Call(ctx context.Context, req core.Request) (core.Response, error)
+}
+
+type StreamingGateway interface {
+	Stream(ctx context.Context, req core.Request) (core.Stream, error)
 }
 
 type ReadyFunc func(ctx context.Context) bool
@@ -160,6 +165,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	if body.Stream {
+		s.handleChatCompletionStream(w, r, body)
+		return
+	}
 
 	req := body.coreRequest(requestID(r), s.newID(), s.defaults)
 	resp, err := s.gateway.Call(r.Context(), req)
@@ -174,6 +183,51 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("X-Augur-Backend", string(resp.Backend))
 	writeJSON(w, http.StatusOK, body.response(req, resp, s.newID(), s.now()))
+}
+
+func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Request, body chatCompletionRequest) {
+	gateway, ok := s.gateway.(StreamingGateway)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "streaming is not supported by this gateway")
+		return
+	}
+
+	req := body.coreRequest(requestID(r), s.newID(), s.defaults)
+	stream, err := gateway.Stream(r.Context(), req)
+	if err != nil {
+		writeGatewayError(w, err)
+		return
+	}
+	defer stream.Close()
+
+	streamID := s.newID()
+	created := s.now().Unix()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flush(w)
+
+	for {
+		chunk, err := stream.Recv()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				writeStreamData(w, errorResponse{Error: errorBody{Message: err.Error(), Type: "upstream_error"}})
+				flush(w)
+			}
+			return
+		}
+		if chunk.Delta != "" {
+			writeStreamData(w, body.streamDelta(streamID, created, chunk.Delta))
+			flush(w)
+		}
+		if chunk.Done {
+			writeStreamData(w, body.streamDone(streamID, created))
+			w.Write([]byte("data: [DONE]\n\n"))
+			flush(w)
+			return
+		}
+	}
 }
 
 type chatCompletionRequest struct {
@@ -192,9 +246,6 @@ func (r chatCompletionRequest) validate() error {
 	}
 	if len(r.Messages) == 0 {
 		return errors.New("messages are required")
-	}
-	if r.Stream {
-		return errors.New("streaming is not supported yet")
 	}
 	if r.N != nil && *r.N != 1 {
 		return errors.New("n must be 1")
@@ -277,6 +328,40 @@ func (r chatCompletionRequest) response(req core.Request, resp core.Response, id
 	}
 }
 
+func (r chatCompletionRequest) streamDelta(id string, created int64, content string) chatCompletionChunkResponse {
+	return chatCompletionChunkResponse{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   r.Model,
+		Choices: []chatStreamChoice{
+			{
+				Index: 0,
+				Delta: chatDeltaMessage{
+					Content: content,
+				},
+			},
+		},
+	}
+}
+
+func (r chatCompletionRequest) streamDone(id string, created int64) chatCompletionChunkResponse {
+	reason := "stop"
+	return chatCompletionChunkResponse{
+		ID:      id,
+		Object:  "chat.completion.chunk",
+		Created: created,
+		Model:   r.Model,
+		Choices: []chatStreamChoice{
+			{
+				Index:        0,
+				Delta:        chatDeltaMessage{},
+				FinishReason: &reason,
+			},
+		},
+	}
+}
+
 type chatMessage struct {
 	Role    string         `json:"role"`
 	Content messageContent `json:"content"`
@@ -334,6 +419,24 @@ type chatUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+}
+
+type chatCompletionChunkResponse struct {
+	ID      string             `json:"id"`
+	Object  string             `json:"object"`
+	Created int64              `json:"created"`
+	Model   string             `json:"model"`
+	Choices []chatStreamChoice `json:"choices"`
+}
+
+type chatStreamChoice struct {
+	Index        int              `json:"index"`
+	Delta        chatDeltaMessage `json:"delta"`
+	FinishReason *string          `json:"finish_reason"`
+}
+
+type chatDeltaMessage struct {
+	Content string `json:"content,omitempty"`
 }
 
 type errorResponse struct {
@@ -396,6 +499,8 @@ func bearerToken(value string) string {
 
 func writeGatewayError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, dataplane.ErrStreaming):
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 	case errors.Is(err, dataplane.ErrLoadShed):
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
 	case errors.Is(err, dataplane.ErrNoCandidates), errors.Is(err, dataplane.ErrMissing):
@@ -415,6 +520,23 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(value)
+}
+
+func writeStreamData(w http.ResponseWriter, value any) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	w.Write([]byte("data: "))
+	w.Write(data)
+	w.Write([]byte("\n\n"))
+}
+
+func flush(w http.ResponseWriter) {
+	flusher, ok := w.(http.Flusher)
+	if ok {
+		flusher.Flush()
+	}
 }
 
 func randomCompletionID() string {

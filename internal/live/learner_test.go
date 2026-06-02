@@ -2,6 +2,7 @@ package live
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 
@@ -50,6 +51,38 @@ type fakeStore struct {
 
 func (s *fakeStore) Save(state control.LearnedState) error {
 	s.saves = append(s.saves, state)
+	return nil
+}
+
+type fakeStreamGateway struct {
+	streamCalls int
+	stream      core.Stream
+}
+
+func (g *fakeStreamGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	return core.Response{RequestID: req.ID, Backend: "a"}, nil
+}
+
+func (g *fakeStreamGateway) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	g.streamCalls++
+	return g.stream, nil
+}
+
+type fakeLiveStream struct {
+	chunks []core.StreamChunk
+	index  int
+}
+
+func (s *fakeLiveStream) Recv() (core.StreamChunk, error) {
+	if s.index >= len(s.chunks) {
+		return core.StreamChunk{}, io.EOF
+	}
+	chunk := s.chunks[s.index]
+	s.index++
+	return chunk, nil
+}
+
+func (s *fakeLiveStream) Close() error {
 	return nil
 }
 
@@ -150,6 +183,52 @@ func TestLearnerPersistsLearnedState(t *testing.T) {
 	last := store.saves[len(store.saves)-1]
 	if last.Reward.Arms["a"].Updates <= 0 {
 		t.Fatalf("saved reward updates got %v", last.Reward.Arms["a"].Updates)
+	}
+}
+
+func TestLearnerStreamsThroughGatewayAndPersistsState(t *testing.T) {
+	bandit := control.NewBanditRouter(control.BanditConfig{
+		Policy:   control.NewPolicy(control.PolicyConfig{}),
+		Backends: []core.BackendID{"a"},
+	})
+	gateway := &fakeStreamGateway{
+		stream: &fakeLiveStream{
+			chunks: []core.StreamChunk{
+				{Delta: "hello"},
+				{Done: true, Outcome: core.Outcome{LatencyMs: 10, OutputTokens: 1}},
+			},
+		},
+	}
+	store := &fakeStore{}
+	learner, err := New(Config{Gateway: gateway, Bandit: bandit, Store: store, SaveEvery: 1})
+	if err != nil {
+		t.Fatalf("new learner: %v", err)
+	}
+	defer learner.Close()
+
+	stream, err := learner.Stream(context.Background(), core.Request{ID: "req-1", Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("stream learner: %v", err)
+	}
+	defer stream.Close()
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+	done, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("done recv: %v", err)
+	}
+	learner.Flush()
+
+	if gateway.streamCalls != 1 {
+		t.Fatalf("stream calls got %d", gateway.streamCalls)
+	}
+	if first.Delta != "hello" || !done.Done {
+		t.Fatalf("chunks got %+v %+v", first, done)
+	}
+	if len(store.saves) == 0 {
+		t.Fatal("stream completion should save learned state")
 	}
 }
 

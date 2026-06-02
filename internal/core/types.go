@@ -49,3 +49,16 @@ type Response struct {
 	OutputText string
 	Outcome
 }
+
+type StreamChunk struct {
+	RequestID string
+	Backend   BackendID
+	Delta     string
+	Done      bool
+	Outcome
+}
+
+type Stream interface {
+	Recv() (StreamChunk, error)
+	Close() error
+}

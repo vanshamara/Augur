@@ -101,9 +101,9 @@ Optional environment variables:
 
 If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
-The current server supports JSON and YAML config files, non-streaming chat
-completions, health and readiness endpoints, live learning, and learned state
-persistence. Streaming is still future work.
+The current server supports JSON and YAML config files, non-streaming and
+streaming chat completions, health and readiness endpoints, live learning, and
+learned state persistence.
 
 Health checks:
 
@@ -115,6 +115,8 @@ Optional gateway auth:
 - set `AUGUR_GATEWAY_API_KEYS` to a comma-separated list of accepted client keys
 - send requests with `Authorization: Bearer <key>` or `X-Augur-API-Key: <key>`
 - leave it unset for local development without auth
+
+For streaming responses, set `"stream": true` in the chat completion request.
 
 Public config examples:
 

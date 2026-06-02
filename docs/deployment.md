@@ -3,8 +3,7 @@
 These notes cover a simple Augur process running behind your own network,
 proxy, or platform layer.
 
-Augur currently provides a local HTTP gateway. It does not yet include TLS or
-streaming.
+Augur currently provides a local HTTP gateway. It does not yet include TLS.
 
 ## Build
 
@@ -150,6 +149,23 @@ X-Augur-API-Key: first-client-key
 Auth protects `/v1/chat/completions`. Health endpoints stay public for load
 balancers and process checks.
 
+## Streaming
+
+Augur supports OpenAI-style streaming chat completions. Set `stream` to `true`
+in the request body:
+
+```json
+{
+  "model": "augur-chat",
+  "stream": true,
+  "messages": [
+    {"role": "user", "content": "Say hello in one short sentence."}
+  ]
+}
+```
+
+Streaming responses use Server-Sent Events and end with `data: [DONE]`.
+
 ## Server Limits
 
 The `server` block controls process-level HTTP safety settings:
@@ -187,7 +203,6 @@ time to finish during shutdown.
 These are still future work:
 
 - TLS config
-- streaming responses
 - container and Kubernetes manifests
 - multi-tenant limits
 - production pricing table helpers

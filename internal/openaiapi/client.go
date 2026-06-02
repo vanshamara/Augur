@@ -1,11 +1,13 @@
 package openaiapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,6 +50,7 @@ type JSONSchema struct {
 type ChatCompletionRequest struct {
 	Model          string          `json:"model"`
 	Messages       []ChatMessage   `json:"messages"`
+	Stream         bool            `json:"stream,omitempty"`
 	Temperature    *float64        `json:"temperature,omitempty"`
 	MaxTokens      int             `json:"max_completion_tokens,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
@@ -57,6 +60,17 @@ type ChatCompletion struct {
 	Content          string
 	PromptTokens     int
 	CompletionTokens int
+}
+
+type ChatCompletionChunk struct {
+	Content string
+	Done    bool
+}
+
+type ChatCompletionStream struct {
+	body   io.Closer
+	reader *bufio.Reader
+	done   bool
 }
 
 func New(config Config) (*Client, error) {
@@ -130,6 +144,89 @@ func (c *Client) ChatCompletion(ctx context.Context, body ChatCompletionRequest)
 	}, nil
 }
 
+func (c *Client) ChatCompletionStream(ctx context.Context, body ChatCompletionRequest) (*ChatCompletionStream, error) {
+	if body.Model == "" {
+		return nil, errors.New("model is required")
+	}
+	if len(body.Messages) == 0 {
+		return nil, errors.New("messages are required")
+	}
+	body.Stream = true
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := c.baseURL.JoinPath("chat", "completions")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		var decoded chatResponse
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return nil, fmt.Errorf("openai api status %d", resp.StatusCode)
+		}
+		return nil, decoded.errorValue(resp.StatusCode)
+	}
+	return &ChatCompletionStream{body: resp.Body, reader: bufio.NewReader(resp.Body)}, nil
+}
+
+func (s *ChatCompletionStream) Recv() (ChatCompletionChunk, error) {
+	if s.done {
+		return ChatCompletionChunk{}, io.EOF
+	}
+	for {
+		line, err := s.reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			chunk, chunkErr := parseStreamData(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			if chunkErr != nil {
+				return ChatCompletionChunk{}, chunkErr
+			}
+			if chunk.Done {
+				s.done = true
+			}
+			return chunk, nil
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				s.done = true
+			}
+			return ChatCompletionChunk{}, err
+		}
+	}
+}
+
+func (s *ChatCompletionStream) Close() error {
+	s.done = true
+	return s.body.Close()
+}
+
+func parseStreamData(data string) (ChatCompletionChunk, error) {
+	if data == "[DONE]" {
+		return ChatCompletionChunk{Done: true}, nil
+	}
+	var decoded chatStreamResponse
+	if err := json.Unmarshal([]byte(data), &decoded); err != nil {
+		return ChatCompletionChunk{}, err
+	}
+	if len(decoded.Choices) == 0 {
+		return ChatCompletionChunk{}, nil
+	}
+	return ChatCompletionChunk{Content: decoded.Choices[0].Delta.Content}, nil
+}
+
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -144,6 +241,14 @@ type chatResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+type chatStreamResponse struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
 }
 
 func (r chatResponse) errorValue(status int) error {

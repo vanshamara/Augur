@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,7 @@ var (
 	ErrNoCandidates = errors.New("no backend candidates")
 	ErrLoadShed     = errors.New("request shed by data plane")
 	ErrMissing      = errors.New("backend is not registered")
+	ErrStreaming    = errors.New("backend does not support streaming")
 )
 
 type HedgeConfig struct {
@@ -108,6 +110,34 @@ func (g *Gateway) Call(ctx context.Context, req core.Request) (core.Response, er
 	resp, err := g.callUnique(ctx, req)
 	g.recordGatewayError(ctx, resp, err)
 	return resp, err
+}
+
+func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	ctx, span := g.observer.Start(ctx, "gateway.stream",
+		attribute.String("request.id", req.ID),
+		attribute.String("router.name", g.router.Name()),
+	)
+	defer span.End()
+
+	candidates := g.candidates(req)
+	if len(candidates) == 0 {
+		return nil, ErrNoCandidates
+	}
+
+	remaining := copyCandidates(candidates)
+	for len(remaining) > 0 {
+		choice := g.router.Pick(ctx, req, remaining)
+		if choice == "" {
+			return nil, ErrNoCandidates
+		}
+		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
+		stream, err := g.streamBackend(ctx, req, choice)
+		if !errors.Is(err, ErrLoadShed) {
+			return stream, err
+		}
+		remaining = without(remaining, choice)
+	}
+	return nil, ErrLoadShed
 }
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
@@ -295,6 +325,120 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	}
 	g.observer.RecordResponse(ctx, resp, err)
 	return resp, err
+}
+
+func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID) (core.Stream, error) {
+	release, ok := g.acquire(id)
+	if !ok {
+		resp := core.Response{RequestID: req.ID, Backend: id}
+		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
+		return nil, ErrLoadShed
+	}
+
+	b := g.backends[id]
+	if b == nil {
+		release()
+		resp := core.Response{RequestID: req.ID, Backend: id}
+		g.observer.RecordResponse(ctx, resp, ErrMissing)
+		return nil, ErrMissing
+	}
+	streamBackend, ok := b.(backend.StreamBackend)
+	if !ok {
+		release()
+		resp := core.Response{RequestID: req.ID, Backend: id}
+		g.observer.RecordResponse(ctx, resp, ErrStreaming)
+		return nil, ErrStreaming
+	}
+
+	stream, err := streamBackend.Stream(ctx, req)
+	if err != nil {
+		release()
+		resp := core.Response{RequestID: req.ID, Backend: id, Outcome: core.Outcome{Errored: true}}
+		g.observeStreamResponse(ctx, id, resp, err)
+		return nil, err
+	}
+	return &gatewayStream{
+		ctx:     ctx,
+		gateway: g,
+		req:     req,
+		id:      id,
+		stream:  stream,
+		release: release,
+	}, nil
+}
+
+func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, resp core.Response, err error) {
+	if shouldObserve(err) {
+		if err == nil {
+			g.router.Observe(ctx, id, resp)
+		}
+		for _, filter := range g.filters {
+			filter.Observe(id, resp, err)
+		}
+	}
+	g.observer.RecordResponse(ctx, resp, err)
+}
+
+type gatewayStream struct {
+	ctx      context.Context
+	gateway  *Gateway
+	req      core.Request
+	id       core.BackendID
+	stream   core.Stream
+	release  Release
+	observed bool
+	closed   bool
+}
+
+func (s *gatewayStream) Recv() (core.StreamChunk, error) {
+	chunk, err := s.stream.Recv()
+	if chunk.RequestID == "" {
+		chunk.RequestID = s.req.ID
+	}
+	if chunk.Backend == "" {
+		chunk.Backend = s.id
+	}
+	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			resp := core.Response{RequestID: s.req.ID, Backend: s.id, Outcome: core.Outcome{Errored: true}}
+			s.observe(resp, err)
+		}
+		s.closeRelease()
+		return chunk, err
+	}
+	if chunk.Done {
+		resp := core.Response{
+			RequestID:  s.req.ID,
+			Backend:    s.id,
+			OutputText: "",
+			Outcome:    chunk.Outcome,
+		}
+		s.observe(resp, nil)
+		s.closeRelease()
+	}
+	return chunk, nil
+}
+
+func (s *gatewayStream) Close() error {
+	err := s.stream.Close()
+	s.closeRelease()
+	return err
+}
+
+func (s *gatewayStream) observe(resp core.Response, err error) {
+	if s.observed {
+		return
+	}
+	s.observed = true
+	s.gateway.observeStreamResponse(s.ctx, s.id, resp, err)
+}
+
+func (s *gatewayStream) closeRelease() {
+	if s.closed {
+		return
+	}
+	s.closed = true
+	s.release()
 }
 
 func (g *Gateway) acquire(id core.BackendID) (Release, bool) {

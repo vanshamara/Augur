@@ -11,3 +11,8 @@ type Backend interface {
 	ID() core.BackendID
 	Call(ctx context.Context, req core.Request) (core.Response, error)
 }
+
+type StreamBackend interface {
+	Backend
+	Stream(ctx context.Context, req core.Request) (core.Stream, error)
+}

@@ -3,6 +3,7 @@ package openaiapi
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -75,6 +76,127 @@ func TestChatCompletionReturnsAPIError(t *testing.T) {
 		t.Fatalf("new client: %v", err)
 	}
 	_, err = client.ChatCompletion(context.Background(), ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected api error")
+	}
+}
+
+func TestChatCompletionStreamSendsOpenAICompatibleRequest(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	var gotAccept string
+	var gotBody ChatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotAccept = r.Header.Get("Accept")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\n"))
+		w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n"))
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL + "/v1", APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	stream, err := client.ChatCompletionStream(context.Background(), ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("chat completion stream: %v", err)
+	}
+	defer stream.Close()
+
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+	second, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("second recv: %v", err)
+	}
+	done, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("done recv: %v", err)
+	}
+
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("path got %s", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Fatalf("authorization header got %q", gotAuth)
+	}
+	if gotAccept != "text/event-stream" {
+		t.Fatalf("accept header got %q", gotAccept)
+	}
+	if !gotBody.Stream {
+		t.Fatal("stream flag should be true")
+	}
+	if first.Content != "hel" || second.Content != "lo" || !done.Done {
+		t.Fatalf("chunks got %+v %+v %+v", first, second, done)
+	}
+}
+
+func TestChatCompletionStreamReturnsEOFAfterDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	stream, err := client.ChatCompletionStream(context.Background(), ChatCompletionRequest{
+		Model: "test-model",
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("chat completion stream: %v", err)
+	}
+	defer stream.Close()
+
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv done: %v", err)
+	}
+	if !chunk.Done {
+		t.Fatalf("done chunk got %+v", chunk)
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		t.Fatalf("second recv error got %v", err)
+	}
+}
+
+func TestChatCompletionStreamReturnsAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":{"message":"bad request"}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL, APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	_, err = client.ChatCompletionStream(context.Background(), ChatCompletionRequest{
 		Model: "test-model",
 		Messages: []ChatMessage{
 			{Role: "user", Content: "hi"},

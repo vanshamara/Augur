@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,16 +16,63 @@ import (
 )
 
 type fakeGateway struct {
-	calls int
-	req   core.Request
-	resp  core.Response
-	err   error
+	calls         int
+	streamCalls   int
+	req           core.Request
+	streamReq     core.Request
+	resp          core.Response
+	err           error
+	stream        core.Stream
+	streamErr     error
+	streamFactory func(context.Context, core.Request) (core.Stream, error)
 }
 
 func (g *fakeGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
 	g.calls++
 	g.req = req
 	return g.resp, g.err
+}
+
+func (g *fakeGateway) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	g.streamCalls++
+	g.streamReq = req
+	if g.streamFactory != nil {
+		return g.streamFactory(ctx, req)
+	}
+	return g.stream, g.streamErr
+}
+
+type fakeStream struct {
+	chunks []core.StreamChunk
+	index  int
+	closed bool
+}
+
+func (s *fakeStream) Recv() (core.StreamChunk, error) {
+	if s.index >= len(s.chunks) {
+		return core.StreamChunk{}, io.EOF
+	}
+	chunk := s.chunks[s.index]
+	s.index++
+	return chunk, nil
+}
+
+func (s *fakeStream) Close() error {
+	s.closed = true
+	return nil
+}
+
+type contextStream struct {
+	ctx context.Context
+}
+
+func (s contextStream) Recv() (core.StreamChunk, error) {
+	<-s.ctx.Done()
+	return core.StreamChunk{}, s.ctx.Err()
+}
+
+func (s contextStream) Close() error {
+	return nil
 }
 
 func TestChatCompletionsRoutesThroughGateway(t *testing.T) {
@@ -115,16 +163,82 @@ func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsRejectsStreaming(t *testing.T) {
-	server := testServer(t, &fakeGateway{})
+func TestChatCompletionsStreamsSSE(t *testing.T) {
+	gateway := &fakeGateway{
+		stream: &fakeStream{
+			chunks: []core.StreamChunk{
+				{Delta: "hel"},
+				{Delta: "lo"},
+				{Done: true},
+			},
+		},
+	}
+	server := testServer(t, gateway)
 	body := `{"model":"augur-chat","stream":true,"messages":[{"role":"user","content":"hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content type got %q", rec.Header().Get("Content-Type"))
+	}
+	bodyText := rec.Body.String()
+	if !strings.Contains(bodyText, `"object":"chat.completion.chunk"`) {
+		t.Fatalf("stream body missing chunk object: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"content":"hel"`) || !strings.Contains(bodyText, `"content":"lo"`) {
+		t.Fatalf("stream body missing deltas: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, "data: [DONE]") {
+		t.Fatalf("stream body missing done marker: %s", bodyText)
+	}
+	if gateway.streamReq.ID == "" || gateway.streamReq.Messages[0].Content != "hello" {
+		t.Fatalf("stream request got %+v", gateway.streamReq)
+	}
+}
+
+func TestChatCompletionsMapsStreamGatewayErrors(t *testing.T) {
+	server := testServer(t, &fakeGateway{streamErr: dataplane.ErrNoCandidates})
+	body := `{"model":"augur-chat","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletionsStopsStreamingOnCancellation(t *testing.T) {
+	started := make(chan struct{})
+	gateway := &fakeGateway{
+		streamFactory: func(ctx context.Context, req core.Request) (core.Stream, error) {
+			close(started)
+			return contextStream{ctx: ctx}, nil
+		},
+	}
+	server := testServer(t, gateway)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"augur-chat","stream":true,"messages":[{"role":"user","content":"hello"}]}`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+
+	go func() {
+		server.ServeHTTP(rec, req)
+		close(done)
+	}()
+	<-started
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not stop after cancellation")
 	}
 }
 

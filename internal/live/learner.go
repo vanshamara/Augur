@@ -16,6 +16,10 @@ type Gateway interface {
 	Call(ctx context.Context, req core.Request) (core.Response, error)
 }
 
+type StreamGateway interface {
+	Stream(ctx context.Context, req core.Request) (core.Stream, error)
+}
+
 type Config struct {
 	Gateway   Gateway
 	Bandit    *control.BanditRouter
@@ -48,6 +52,11 @@ type Learner struct {
 type judgeWork struct {
 	req  core.Request
 	resp core.Response
+}
+
+type learnerStream struct {
+	learner *Learner
+	stream  core.Stream
 }
 
 func New(config Config) (*Learner, error) {
@@ -86,8 +95,35 @@ func (l *Learner) Call(ctx context.Context, req core.Request) (core.Response, er
 	return resp, err
 }
 
+func (l *Learner) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	gateway, ok := l.gateway.(StreamGateway)
+	if !ok {
+		return nil, errors.New("gateway does not support streaming")
+	}
+	stream, err := gateway.Stream(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &learnerStream{learner: l, stream: stream}, nil
+}
+
+func (s *learnerStream) Recv() (core.StreamChunk, error) {
+	chunk, err := s.stream.Recv()
+	if err == nil && chunk.Done && !chunk.Errored {
+		s.learner.enqueueSave()
+	}
+	return chunk, err
+}
+
+func (s *learnerStream) Close() error {
+	return s.stream.Close()
+}
+
 func (l *Learner) Flush() {
 	l.wait.Wait()
+	if l.bandit != nil {
+		l.bandit.Flush()
+	}
 	l.saveNow()
 }
 

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/vanshamara/Augur/internal/core"
@@ -79,6 +80,69 @@ func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, er
 	}, nil
 }
 
+func (b *Backend) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	start := time.Now()
+	stream, err := b.client.ChatCompletionStream(ctx, openaiapi.ChatCompletionRequest{
+		Model:       b.model,
+		Messages:    chatMessages(req),
+		Temperature: req.Temperature,
+		MaxTokens:   maxCompletionTokens(req, b.maxCompletionTokens),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &backendStream{
+		requestID:          req.ID,
+		backend:            b.id,
+		start:              start,
+		promptTokens:       req.Features.PromptTokens,
+		inputCostPerToken:  b.inputCostPerToken,
+		outputCostPerToken: b.outputCostPerToken,
+		stream:             stream,
+	}, nil
+}
+
+type backendStream struct {
+	requestID          string
+	backend            core.BackendID
+	start              time.Time
+	promptTokens       int
+	inputCostPerToken  float64
+	outputCostPerToken float64
+	output             strings.Builder
+	stream             *openaiapi.ChatCompletionStream
+}
+
+func (s *backendStream) Recv() (core.StreamChunk, error) {
+	chunk, err := s.stream.Recv()
+	if err != nil {
+		return core.StreamChunk{}, err
+	}
+
+	out := core.StreamChunk{
+		RequestID: s.requestID,
+		Backend:   s.backend,
+		Delta:     chunk.Content,
+		Done:      chunk.Done,
+	}
+	if chunk.Content != "" {
+		s.output.WriteString(chunk.Content)
+	}
+	if chunk.Done {
+		outputTokens := estimateCompletionTokens(s.output.String())
+		out.Outcome = core.Outcome{
+			LatencyMs:    elapsedMs(s.start),
+			CostUSD:      float64(s.promptTokens)*s.inputCostPerToken + float64(outputTokens)*s.outputCostPerToken,
+			OutputTokens: outputTokens,
+		}
+	}
+	return out, nil
+}
+
+func (s *backendStream) Close() error {
+	return s.stream.Close()
+}
+
 func elapsedMs(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000
 }
@@ -99,4 +163,15 @@ func maxCompletionTokens(req core.Request, fallback int) int {
 		return req.MaxCompletionTokens
 	}
 	return fallback
+}
+
+func estimateCompletionTokens(text string) int {
+	if text == "" {
+		return 0
+	}
+	tokens := len([]rune(text)) / 4
+	if tokens < 1 {
+		return 1
+	}
+	return tokens
 }

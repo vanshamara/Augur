@@ -2,6 +2,8 @@ package dataplane
 
 import (
 	"context"
+	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -48,6 +50,36 @@ func (f *fakeBackend) Call(ctx context.Context, req core.Request) (core.Response
 		resp.Backend = f.id
 	}
 	return resp, f.err
+}
+
+type fakeStreamBackend struct {
+	*fakeBackend
+	chunks []core.StreamChunk
+}
+
+func (f *fakeStreamBackend) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	f.calls.Add(1)
+	return &fakeStream{chunks: append([]core.StreamChunk(nil), f.chunks...)}, nil
+}
+
+type fakeStream struct {
+	chunks []core.StreamChunk
+	index  int
+	closed bool
+}
+
+func (s *fakeStream) Recv() (core.StreamChunk, error) {
+	if s.index >= len(s.chunks) {
+		return core.StreamChunk{}, io.EOF
+	}
+	chunk := s.chunks[s.index]
+	s.index++
+	return chunk, nil
+}
+
+func (s *fakeStream) Close() error {
+	s.closed = true
+	return nil
 }
 
 type recordingFilter struct {
@@ -249,6 +281,108 @@ func TestSingleFlightDeduplicatesInFlightRequests(t *testing.T) {
 	}
 	if model.calls.Load() != 1 {
 		t.Fatalf("deduped calls should hit backend once, got %d", model.calls.Load())
+	}
+}
+
+func TestGatewayStreamsRoutedBackend(t *testing.T) {
+	model := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "a"},
+		chunks: []core.StreamChunk{
+			{Delta: "hel"},
+			{Delta: "lo"},
+			{Done: true, Outcome: core.Outcome{LatencyMs: 10, OutputTokens: 2}},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{model},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+	second, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("second recv: %v", err)
+	}
+	done, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("done recv: %v", err)
+	}
+
+	if first.RequestID != "req" || first.Backend != "a" || first.Delta != "hel" {
+		t.Fatalf("first chunk got %+v", first)
+	}
+	if second.Delta != "lo" {
+		t.Fatalf("second chunk got %+v", second)
+	}
+	if !done.Done || done.OutputTokens != 2 {
+		t.Fatalf("done chunk got %+v", done)
+	}
+	if model.calls.Load() != 1 {
+		t.Fatalf("stream calls got %d", model.calls.Load())
+	}
+}
+
+func TestGatewayStreamRejectsUnsupportedBackend(t *testing.T) {
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{instantBackend("a")},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if !errors.Is(err, ErrStreaming) {
+		t.Fatalf("stream error got %v", err)
+	}
+}
+
+func TestGatewayStreamReleasesLimiterAfterDone(t *testing.T) {
+	limiter := NewAdaptiveLimiter([]core.BackendID{"a"}, LimitConfig{
+		InitialLimit:    1,
+		MinLimit:        1,
+		MaxLimit:        2,
+		TargetLatencyMs: 100,
+	})
+	model := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "a"},
+		chunks: []core.StreamChunk{
+			{Delta: "hello"},
+			{Done: true, Outcome: core.Outcome{LatencyMs: 10, OutputTokens: 1}},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{model},
+		Filters:  []Filter{limiter},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if _, ok := limiter.Acquire("a"); ok {
+		t.Fatal("stream should hold limiter slot")
+	}
+	stream.Recv()
+	stream.Recv()
+	if limiter.InFlight("a") != 0 {
+		t.Fatalf("stream leaked limiter slot: %d", limiter.InFlight("a"))
 	}
 }
 
