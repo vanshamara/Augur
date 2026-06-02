@@ -42,6 +42,24 @@ Public examples are in `configs/`:
 Copy one of those files outside the repo and replace model IDs with real model
 names. Keep API keys in the environment, not in config files.
 
+## Pricing
+
+Prices are USD per token.
+
+Set model prices once in `pricing.models`:
+
+```yaml
+pricing:
+  models:
+    your-model-id:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000004
+```
+
+Augur matches the table key against `backend.model`. If the model is unknown,
+the backend keeps a zero price. Set backend-level `input_cost_per_token` and
+`output_cost_per_token` when you want a backend to override the table.
+
 ## Runtime State
 
 If `learning.persistence.enabled` is true, Augur writes learned reward and
@@ -205,4 +223,3 @@ These are still future work:
 - TLS config
 - container and Kubernetes manifests
 - multi-tenant limits
-- production pricing table helpers

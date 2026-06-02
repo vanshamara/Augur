@@ -129,6 +129,20 @@ Public config examples:
 - `configs/deployment.example.json` and `configs/deployment.example.yaml`:
   deployment-shaped bandit config
 
+Pricing can be set once per model in the `pricing.models` table:
+
+```yaml
+pricing:
+  models:
+    your-model-id:
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000004
+```
+
+Prices are USD per token. If a backend has no explicit price, Augur looks up the
+price by `backend.model`. Backend-level `input_cost_per_token` and
+`output_cost_per_token` values override the table.
+
 With `router.type` set to `bandit`, real responses update the live reward model.
 Set `learning.judge.enabled` to `true` and provide a judge model to add sampled
 quality labels.
@@ -218,6 +232,6 @@ The next phase is packaging and hardening:
 - production HTTP hardening
 - tuned hedging budgets
 - tuned canary thresholds
-- pricing table updates
+- pricing data upkeep
 - multi-tenant limits
 - stronger production safety checks

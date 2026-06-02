@@ -31,6 +31,7 @@ type App struct {
 	Router    Router               `json:"router"`
 	DataPlane DataPlane            `json:"data_plane"`
 	Learning  Learning             `json:"learning"`
+	Pricing   Pricing              `json:"pricing"`
 	Policy    control.PolicyConfig `json:"policy"`
 	Budgets   Budgets              `json:"budgets"`
 }
@@ -55,6 +56,15 @@ type Backend struct {
 	InputCostPerToken   float64        `json:"input_cost_per_token"`
 	OutputCostPerToken  float64        `json:"output_cost_per_token"`
 	MaxCompletionTokens int            `json:"max_completion_tokens"`
+}
+
+type Pricing struct {
+	Models map[string]ModelPrice `json:"models"`
+}
+
+type ModelPrice struct {
+	InputCostPerToken  float64 `json:"input_cost_per_token"`
+	OutputCostPerToken float64 `json:"output_cost_per_token"`
 }
 
 type Router struct {
@@ -258,6 +268,7 @@ func (a App) withDefaults() (App, error) {
 			a.Backends[i].ID = core.BackendID(a.Backends[i].Model)
 		}
 	}
+	a.applyPricingTable()
 	if err := validateRouter(a.Router.Type); err != nil {
 		return App{}, err
 	}
@@ -296,6 +307,21 @@ func (a App) withDefaults() (App, error) {
 		return App{}, errors.New("policy exploration judge_sample_rate must be positive when judge is enabled")
 	}
 	return a, nil
+}
+
+func (a *App) applyPricingTable() {
+	for i := range a.Backends {
+		price, ok := a.Pricing.Models[a.Backends[i].Model]
+		if !ok {
+			continue
+		}
+		if a.Backends[i].InputCostPerToken == 0 {
+			a.Backends[i].InputCostPerToken = price.InputCostPerToken
+		}
+		if a.Backends[i].OutputCostPerToken == 0 {
+			a.Backends[i].OutputCostPerToken = price.OutputCostPerToken
+		}
+	}
 }
 
 func validateRouter(name string) error {

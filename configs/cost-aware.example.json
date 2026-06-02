@@ -14,18 +14,26 @@
     {
       "id": "cheap",
       "model": "your-cheap-model-id",
-      "input_cost_per_token": 0.0000002,
-      "output_cost_per_token": 0.0000008,
       "max_completion_tokens": 512
     },
     {
       "id": "strong",
       "model": "your-strong-model-id",
-      "input_cost_per_token": 0.000001,
-      "output_cost_per_token": 0.000003,
       "max_completion_tokens": 512
     }
   ],
+  "pricing": {
+    "models": {
+      "your-cheap-model-id": {
+        "input_cost_per_token": 0.0000002,
+        "output_cost_per_token": 0.0000008
+      },
+      "your-strong-model-id": {
+        "input_cost_per_token": 0.000001,
+        "output_cost_per_token": 0.000003
+      }
+    }
+  },
   "router": {
     "type": "cost_aware"
   },

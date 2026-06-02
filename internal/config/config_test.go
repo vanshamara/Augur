@@ -133,6 +133,83 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseAppliesPricingTableByModel(t *testing.T) {
+	config, err := Parse([]byte(`{
+		"backends": [
+			{"id": "fast", "model": "model-fast"}
+		],
+		"pricing": {
+			"models": {
+				"model-fast": {
+					"input_cost_per_token": 0.000001,
+					"output_cost_per_token": 0.000004
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	backend := config.Backends[0]
+	if backend.InputCostPerToken != 0.000001 || backend.OutputCostPerToken != 0.000004 {
+		t.Fatalf("backend prices got %+v", backend)
+	}
+}
+
+func TestParseKeepsBackendPricingOverrides(t *testing.T) {
+	config, err := Parse([]byte(`{
+		"backends": [
+			{
+				"id": "fast",
+				"model": "model-fast",
+				"input_cost_per_token": 0.000010,
+				"output_cost_per_token": 0.000020
+			}
+		],
+		"pricing": {
+			"models": {
+				"model-fast": {
+					"input_cost_per_token": 0.000001,
+					"output_cost_per_token": 0.000004
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	backend := config.Backends[0]
+	if backend.InputCostPerToken != 0.000010 || backend.OutputCostPerToken != 0.000020 {
+		t.Fatalf("backend prices got %+v", backend)
+	}
+}
+
+func TestParseLeavesUnknownModelPricesAtZero(t *testing.T) {
+	config, err := Parse([]byte(`{
+		"backends": [
+			{"id": "fast", "model": "missing-model"}
+		],
+		"pricing": {
+			"models": {
+				"known-model": {
+					"input_cost_per_token": 0.000001,
+					"output_cost_per_token": 0.000004
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	backend := config.Backends[0]
+	if backend.InputCostPerToken != 0 || backend.OutputCostPerToken != 0 {
+		t.Fatalf("backend prices got %+v", backend)
+	}
+}
+
 func TestParseYAMLLoadsGatewayConfig(t *testing.T) {
 	data := []byte(`
 server:

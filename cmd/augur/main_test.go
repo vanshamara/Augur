@@ -146,6 +146,42 @@ func TestBuildRouterFromConfig(t *testing.T) {
 	}
 }
 
+func TestBuildRouterUsesPricingTable(t *testing.T) {
+	config, err := appconfig.Parse([]byte(`{
+		"backends": [
+			{"id": "a", "model": "model-a"},
+			{"id": "b", "model": "model-b"}
+		],
+		"pricing": {
+			"models": {
+				"model-a": {
+					"input_cost_per_token": 0.000002,
+					"output_cost_per_token": 0.000006
+				},
+				"model-b": {
+					"input_cost_per_token": 0.000001,
+					"output_cost_per_token": 0.000003
+				}
+			}
+		},
+		"router": {
+			"type": "cost_aware"
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	ids := []core.BackendID{"a", "b"}
+	route, err := buildRouter(config, ids)
+	if err != nil {
+		t.Fatalf("build router: %v", err)
+	}
+	if got := route.Router.Pick(context.Background(), core.Request{ID: "req-1"}, ids); got != "b" {
+		t.Fatalf("router picked %s", got)
+	}
+}
+
 func TestBuildRouterCanBuildBandit(t *testing.T) {
 	routing, err := buildRouter(appconfig.App{
 		Router: appconfig.Router{Type: "bandit", Seed: 7},
