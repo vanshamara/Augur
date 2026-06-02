@@ -14,12 +14,17 @@ import (
 // needs its own.
 type RouterFactory func(backends []*mock.Backend) router.Router
 
-// BaselineFactories returns the five baseline routers in a fixed order. Static aims
+const BaselineScopeNote = "scope: LiteLLM and Envoy rows are local router shims over the same mock backends. " +
+	"They do not measure proxy overhead, retries, provider integrations, streaming, auth, caching, or Redis rate-limit behavior."
+
+// BaselineFactories returns the baseline routers in a fixed order. Static aims
 // at the first backend in the set.
 func BaselineFactories() []RouterFactory {
 	return []RouterFactory{
 		func(b []*mock.Backend) router.Router { return router.NewStatic(idsOf(b)[0]) },
 		func(b []*mock.Backend) router.Router { return router.NewRoundRobin() },
+		func(b []*mock.Backend) router.Router { return router.NewLiteLLMShuffle(nil, 7001) },
+		func(b []*mock.Backend) router.Router { return router.NewEnvoyLeastRequest(idsOf(b), nil, 8001) },
 		func(b []*mock.Backend) router.Router { return router.NewLeastLoaded(idsOf(b)) },
 		func(b []*mock.Backend) router.Router { return router.NewEWMA(idsOf(b), 0.2) },
 		func(b []*mock.Backend) router.Router { return router.NewCostAware(pricesOf(b)) },
@@ -127,11 +132,14 @@ func indexOf(names []string, target string) int {
 // confidence half width.
 func (c RegimeComparison) String() string {
 	var b strings.Builder
+	routerWidth := c.routerColumnWidth()
 	fmt.Fprintf(&b, "regime=%s  seeds=%d  requests=%d  reference=%s\n", c.Regime, c.Seeds, c.Requests, c.Reference)
-	fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
+	fmt.Fprintf(&b, "%-*s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
+		routerWidth,
 		"router", "p95 ms", "p99 ms", "cost $", "err", "quality", "obj regret", "viol", "learn cost", "p95 vs ref ms")
 	for _, r := range c.Routers {
-		fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
+		fmt.Fprintf(&b, "%-*s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
+			routerWidth,
 			r.Router,
 			cell(r.P95.Mean, r.P95.CIHalf, 0),
 			cell(r.P99.Mean, r.P99.CIHalf, 0),
@@ -147,6 +155,19 @@ func (c RegimeComparison) String() string {
 	b.WriteString("cost is shown in millionths of a dollar per request\n")
 	b.WriteString("obj regret is policy-relative over feasible choices; learn cost is cumulative objective regret\n")
 	return b.String()
+}
+
+func (c RegimeComparison) routerColumnWidth() int {
+	width := len("router")
+	for _, r := range c.Routers {
+		if len(r.Router) > width {
+			width = len(r.Router)
+		}
+	}
+	if width < 13 {
+		return 13
+	}
+	return width
 }
 
 func cell(mean, half float64, places int) string {

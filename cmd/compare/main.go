@@ -18,6 +18,9 @@ func main() {
 		seeds[i] = uint64(i + 1)
 	}
 
+	fmt.Println(harness.BaselineScopeNote)
+	fmt.Println()
+
 	for _, regime := range harness.AllRegimes() {
 		comparison := harness.Compare(regime, harness.BaselineFactories(), seeds, requests, start)
 		fmt.Println(comparison.String())

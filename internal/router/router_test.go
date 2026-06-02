@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -79,10 +80,53 @@ func TestCostAwarePicksCheapest(t *testing.T) {
 	}
 }
 
+func TestLiteLLMShuffleRespectsWeights(t *testing.T) {
+	route := NewLiteLLMShuffle(map[core.BackendID]float64{
+		"a": 1,
+		"b": 0,
+	}, 3)
+
+	for i := 0; i < 50; i++ {
+		request := core.Request{ID: "req-" + strconv.Itoa(i)}
+		if got := route.Pick(context.Background(), request, []core.BackendID{"a", "b"}); got != "a" {
+			t.Fatalf("zero weight backend should not be picked, got %s", got)
+		}
+	}
+}
+
+func TestEnvoyLeastRequestUsesActiveRequests(t *testing.T) {
+	ids := []core.BackendID{"a", "b"}
+	route := NewEnvoyLeastRequest(ids, nil, 5)
+	route.inFlight["a"].Add(3)
+
+	if got := route.Pick(context.Background(), req, ids); got != "b" {
+		t.Fatalf("expected least busy backend b, got %s", got)
+	}
+}
+
+func TestEnvoyLeastRequestUsesWeightsWhenConfigured(t *testing.T) {
+	ids := []core.BackendID{"a", "b"}
+	route := NewEnvoyLeastRequest(ids, map[core.BackendID]float64{
+		"a": 10,
+		"b": 1,
+	}, 5)
+
+	if got := route.Pick(context.Background(), req, ids); got != "a" {
+		t.Fatalf("expected higher weighted backend a, got %s", got)
+	}
+
+	route.inFlight["a"].Add(20)
+	if got := route.Pick(context.Background(), core.Request{ID: "y"}, ids); got != "b" {
+		t.Fatalf("expected load-adjusted backend b, got %s", got)
+	}
+}
+
 func TestSignalRoutersAreRaceFree(t *testing.T) {
 	ids := []core.BackendID{"a", "b", "c"}
 	ll := NewLeastLoaded(ids)
 	e := NewEWMA(ids, 0.3)
+	envoy := NewEnvoyLeastRequest(ids, nil, 11)
+	litellm := NewLiteLLMShuffle(nil, 13)
 
 	var wg sync.WaitGroup
 	for g := 0; g < 50; g++ {
@@ -94,6 +138,9 @@ func TestSignalRoutersAreRaceFree(t *testing.T) {
 				ll.Observe(context.Background(), loaded, resp(loaded, 100))
 				fast := e.Pick(context.Background(), req, ids)
 				e.Observe(context.Background(), fast, resp(fast, 100))
+				proxy := envoy.Pick(context.Background(), req, ids)
+				envoy.Observe(context.Background(), proxy, resp(proxy, 100))
+				litellm.Pick(context.Background(), req, ids)
 			}
 		}()
 	}
@@ -105,5 +152,13 @@ func TestSignalRoutersAreRaceFree(t *testing.T) {
 	}
 	if total != 0 {
 		t.Fatalf("every picked request was observed, so in flight should net to zero, got %d", total)
+	}
+
+	total = 0
+	for _, id := range ids {
+		total += envoy.inFlight[id].Load()
+	}
+	if total != 0 {
+		t.Fatalf("envoy shim in flight should net to zero, got %d", total)
 	}
 }

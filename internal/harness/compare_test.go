@@ -18,7 +18,15 @@ func TestCompareIsDeterministic(t *testing.T) {
 
 func TestCompareCoversEveryRouter(t *testing.T) {
 	c := compareStable()
-	want := map[string]bool{"static": false, "round-robin": false, "least-loaded": false, "ewma": false, "cost-aware": false}
+	want := map[string]bool{
+		"static":              false,
+		"round-robin":         false,
+		"litellm-shuffle":     false,
+		"envoy-least-request": false,
+		"least-loaded":        false,
+		"ewma":                false,
+		"cost-aware":          false,
+	}
 	for _, r := range c.Routers {
 		want[r.Router] = true
 	}
