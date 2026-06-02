@@ -7,6 +7,8 @@ import (
 
 type message[O any] struct {
 	observation O
+	transform   any
+	result      chan any
 	barrier     chan struct{}
 }
 
@@ -41,6 +43,13 @@ func (c *Core[S, O]) run() {
 			close(msg.barrier)
 			continue
 		}
+		if msg.transform != nil {
+			current := *c.snapshot.Load()
+			next := msg.transform.(func(S) S)(current)
+			c.snapshot.Store(&next)
+			msg.result <- next
+			continue
+		}
 		current := *c.snapshot.Load()
 		next := c.apply(current, msg.observation)
 		c.snapshot.Store(&next)
@@ -56,6 +65,12 @@ func (c *Core[S, O]) Update(observation O) {
 // Snapshot returns the latest published state without taking a lock.
 func (c *Core[S, O]) Snapshot() S {
 	return *c.snapshot.Load()
+}
+
+func (c *Core[S, O]) Transform(apply func(S) S) S {
+	result := make(chan any)
+	c.messages <- message[O]{transform: apply, result: result}
+	return (<-result).(S)
 }
 
 // Flush blocks until the writer has applied every update queued before this call.

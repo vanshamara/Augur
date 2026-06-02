@@ -100,19 +100,23 @@ func (m *LinearModel) Close() {
 }
 
 func (m *LinearModel) apply(current LinearSnapshot, observation LinearObservation) LinearSnapshot {
-	next := current.clone(m.dimension)
-	arm := next.arm(observation.Backend, m.dimension, observation.At)
-	arm = decayArm(arm, observation.At, m.tau)
+	return applyObservationToSnapshot(current, observation, m.dimension, m.tau)
+}
+
+func applyObservationToSnapshot(current LinearSnapshot, observation LinearObservation, dimension int, tau time.Duration) LinearSnapshot {
+	next := current.clone(dimension)
+	arm := next.arm(observation.Backend, dimension, observation.At)
+	arm = decayArm(arm, observation.At, tau)
 
 	weight := observation.Weight
 	if !observation.DecisionTime.IsZero() {
 		age := observation.At.Sub(observation.DecisionTime)
 		if age > 0 {
-			weight *= math.Exp(-age.Seconds() / m.tau.Seconds())
+			weight *= math.Exp(-age.Seconds() / tau.Seconds())
 		}
 	}
 
-	for i := 0; i < m.dimension && i < len(observation.Features); i++ {
+	for i := 0; i < dimension && i < len(observation.Features); i++ {
 		value := observation.Features[i]
 		arm.Precision[i] += weight * value * value
 		arm.Target[i] += weight * value * observation.Value

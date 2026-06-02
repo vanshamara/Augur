@@ -48,6 +48,19 @@ func TestSnapshotIsLockFreeWhileWriting(t *testing.T) {
 	}
 }
 
+func TestTransformRunsThroughSingleWriter(t *testing.T) {
+	core := NewCore(counter{}, add)
+	defer core.Close()
+	core.Update(10)
+	got := core.Transform(func(current counter) counter {
+		current.sum *= 2
+		return current
+	})
+	if got.sum != 20 || got.count != 1 {
+		t.Fatalf("transform should see queued updates and publish the result, got %+v", got)
+	}
+}
+
 func TestConcurrentUpdatesAreNotLost(t *testing.T) {
 	core := NewCore(counter{}, add)
 	defer core.Close()
