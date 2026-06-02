@@ -95,6 +95,35 @@ func TestReadConfigLoadsFile(t *testing.T) {
 	}
 }
 
+func TestGatewayAuthKeysFromEnv(t *testing.T) {
+	keys := gatewayAuthKeys(func(key string) string {
+		if key == "AUGUR_GATEWAY_API_KEYS" {
+			return " first-key, second-key ,, "
+		}
+		return ""
+	})
+	want := []string{"first-key", "second-key"}
+
+	if len(keys) != len(want) {
+		t.Fatalf("keys got %v want %v", keys, want)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("key %d got %q want %q", i, keys[i], want[i])
+		}
+	}
+}
+
+func TestGatewayAuthKeysDisabledByDefault(t *testing.T) {
+	keys := gatewayAuthKeys(func(key string) string {
+		return ""
+	})
+
+	if len(keys) != 0 {
+		t.Fatalf("keys got %v", keys)
+	}
+}
+
 func TestBuildRouterFromConfig(t *testing.T) {
 	ids := []core.BackendID{"a", "b"}
 	config := appconfig.App{

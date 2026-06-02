@@ -84,6 +84,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 
 	apiServer, err := httpapi.New(httpapi.Config{
 		Gateway:      servingGateway,
+		AuthKeys:     gatewayAuthKeys(getenv),
 		Defaults:     requestDefaults(config.Budgets),
 		MaxBodyBytes: config.Server.MaxBodyBytes,
 		Ready: func(ctx context.Context) bool {
@@ -130,6 +131,23 @@ func readConfig(getenv func(string) string) (appconfig.App, error) {
 		},
 		Backends: backends,
 	}, nil
+}
+
+func gatewayAuthKeys(getenv func(string) string) []string {
+	value := strings.TrimSpace(getenv("AUGUR_GATEWAY_API_KEYS"))
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	keys := make([]string, 0, len(parts))
+	for _, part := range parts {
+		key := strings.TrimSpace(part)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	return keys
 }
 
 func parseBackends(value string) ([]appconfig.Backend, error) {

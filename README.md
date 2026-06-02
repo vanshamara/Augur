@@ -103,12 +103,18 @@ If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
 The current server supports JSON config files, non-streaming chat completions,
 health and readiness endpoints, live learning, and learned state persistence.
-YAML config, streaming, and auth are still future work.
+YAML config and streaming are still future work.
 
 Health checks:
 
 - `GET /healthz`: process is running
 - `GET /readyz`: gateway is ready to serve traffic
+
+Optional gateway auth:
+
+- set `AUGUR_GATEWAY_API_KEYS` to a comma-separated list of accepted client keys
+- send requests with `Authorization: Bearer <key>` or `X-Augur-API-Key: <key>`
+- leave it unset for local development without auth
 
 Public config examples:
 
@@ -204,7 +210,6 @@ Before publishing or pushing changes, scan for keys and tokens.
 The next phase is packaging and hardening:
 
 - production HTTP hardening
-- production auth
 - YAML config support
 - tuned hedging budgets
 - tuned canary thresholds

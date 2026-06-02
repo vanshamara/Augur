@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,7 @@ type Config struct {
 	Now          func() time.Time
 	NewID        func() string
 	Ready        ReadyFunc
+	AuthKeys     []string
 	Defaults     RequestDefaults
 	MaxBodyBytes int64
 }
@@ -42,6 +44,7 @@ type Server struct {
 	now          func() time.Time
 	newID        func() string
 	ready        ReadyFunc
+	authKeys     []string
 	defaults     RequestDefaults
 	maxBodyBytes int64
 	mux          *http.ServeMux
@@ -72,13 +75,14 @@ func New(config Config) (*Server, error) {
 		now:          config.Now,
 		newID:        config.NewID,
 		ready:        config.Ready,
+		authKeys:     cleanAuthKeys(config.AuthKeys),
 		defaults:     config.Defaults,
 		maxBodyBytes: config.MaxBodyBytes,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealth)
 	mux.HandleFunc("/readyz", server.handleReady)
-	mux.HandleFunc("/v1/chat/completions", server.handleChatCompletions)
+	mux.HandleFunc("/v1/chat/completions", server.handleAuthenticatedChatCompletions)
 	server.mux = mux
 	return server, nil
 }
@@ -105,6 +109,34 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) handleAuthenticatedChatCompletions(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "valid API key is required")
+		return
+	}
+	s.handleChatCompletions(w, r)
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	if len(s.authKeys) == 0 {
+		return true
+	}
+	key := bearerToken(r.Header.Get("Authorization"))
+	if key == "" {
+		key = strings.TrimSpace(r.Header.Get("X-Augur-API-Key"))
+	}
+	if key == "" {
+		return false
+	}
+	for _, accepted := range s.authKeys {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(accepted)) == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +372,26 @@ func requestID(r *http.Request) string {
 		return id
 	}
 	return ""
+}
+
+func cleanAuthKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func bearerToken(value string) string {
+	value = strings.TrimSpace(value)
+	prefix := "Bearer "
+	if !strings.HasPrefix(value, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(value, prefix))
 }
 
 func writeGatewayError(w http.ResponseWriter, err error) {

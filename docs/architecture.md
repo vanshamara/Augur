@@ -87,7 +87,6 @@ Current limits:
 
 - JSON config only
 - non-streaming chat completions only
-- no built-in auth layer
 - no deployment package or container image in this repo
 - no multi-tenant quota system yet
 

@@ -15,12 +15,14 @@ import (
 )
 
 type fakeGateway struct {
-	req  core.Request
-	resp core.Response
-	err  error
+	calls int
+	req   core.Request
+	resp  core.Response
+	err   error
 }
 
 func (g *fakeGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	g.calls++
 	g.req = req
 	return g.resp, g.err
 }
@@ -145,6 +147,112 @@ func TestChatCompletionsRejectsLargeBody(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsAllowsMissingAPIKeyWhenAuthDisabled(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:  "req-1",
+			Backend:    "fast",
+			OutputText: "answer",
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.calls != 1 {
+		t.Fatalf("gateway calls got %d", gateway.calls)
+	}
+}
+
+func TestChatCompletionsRejectsMissingAPIKey(t *testing.T) {
+	gateway := &fakeGateway{}
+	server := testServerWithAuth(t, gateway, []string{"client-key"})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.calls != 0 {
+		t.Fatalf("gateway calls got %d", gateway.calls)
+	}
+}
+
+func TestChatCompletionsRejectsBadAPIKey(t *testing.T) {
+	gateway := &fakeGateway{}
+	server := testServerWithAuth(t, gateway, []string{"client-key"})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.calls != 0 {
+		t.Fatalf("gateway calls got %d", gateway.calls)
+	}
+}
+
+func TestChatCompletionsAcceptsBearerAPIKey(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:  "req-1",
+			Backend:    "fast",
+			OutputText: "answer",
+		},
+	}
+	server := testServerWithAuth(t, gateway, []string{"client-key"})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.calls != 1 {
+		t.Fatalf("gateway calls got %d", gateway.calls)
+	}
+}
+
+func TestChatCompletionsAcceptsHeaderAPIKey(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:  "req-1",
+			Backend:    "fast",
+			OutputText: "answer",
+		},
+	}
+	server := testServerWithAuth(t, gateway, []string{"client-key"})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Augur-API-Key", "client-key")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.calls != 1 {
+		t.Fatalf("gateway calls got %d", gateway.calls)
+	}
+}
+
 func TestChatCompletionsMapsGatewayErrors(t *testing.T) {
 	server := testServer(t, &fakeGateway{err: dataplane.ErrLoadShed})
 	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
@@ -180,6 +288,18 @@ func TestHealth(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status got %d", rec.Code)
+	}
+}
+
+func TestHealthStaysPublicWhenAuthEnabled(t *testing.T) {
+	server := testServerWithAuth(t, &fakeGateway{}, []string{"client-key"})
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -228,6 +348,28 @@ func testServerWithDefaults(t *testing.T, gateway Gateway, defaults RequestDefau
 	server, err := New(Config{
 		Gateway:  gateway,
 		Defaults: defaults,
+		Now: func() time.Time {
+			return time.Unix(123, 0)
+		},
+		NewID: func() string {
+			return "chatcmpl-test"
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	return server
+}
+
+func testServerWithAuth(t *testing.T, gateway Gateway, keys []string) *Server {
+	t.Helper()
+	server, err := New(Config{
+		Gateway:  gateway,
+		AuthKeys: keys,
+		Defaults: RequestDefaults{
+			LatencyBudgetMs: 1200,
+			CostBudgetUSD:   0.01,
+		},
 		Now: func() time.Time {
 			return time.Unix(123, 0)
 		},

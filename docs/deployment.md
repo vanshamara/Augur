@@ -3,8 +3,8 @@
 These notes cover a simple Augur process running behind your own network,
 proxy, or platform layer.
 
-Augur currently provides a local HTTP gateway. It does not yet include built-in
-auth, TLS, or streaming.
+Augur currently provides a local HTTP gateway. It does not yet include TLS or
+streaming.
 
 ## Build
 
@@ -72,6 +72,7 @@ Example environment file:
 ```bash
 OPENAI_API_KEY=replace-with-your-key
 AUGUR_CONFIG=/etc/augur/config.json
+AUGUR_GATEWAY_API_KEYS=replace-with-client-key
 ```
 
 Example systemd unit:
@@ -122,6 +123,30 @@ Augur exposes two public health endpoints:
 Use `/readyz` for load balancer readiness checks. Use `/healthz` when you only
 need to know if the process is alive.
 
+## Gateway Auth
+
+Gateway auth is disabled unless `AUGUR_GATEWAY_API_KEYS` is set. This keeps local
+development simple and keeps real keys out of config files.
+
+Set one or more accepted client keys:
+
+```bash
+AUGUR_GATEWAY_API_KEYS=first-client-key,second-client-key
+```
+
+Clients can send either header:
+
+```bash
+Authorization: Bearer first-client-key
+```
+
+```bash
+X-Augur-API-Key: first-client-key
+```
+
+Auth protects `/v1/chat/completions`. Health endpoints stay public for load
+balancers and process checks.
+
 ## Server Limits
 
 The `server` block controls process-level HTTP safety settings:
@@ -146,6 +171,7 @@ time to finish during shutdown.
 ## Operations Checklist
 
 - Keep `OPENAI_API_KEY` and other provider keys outside git.
+- Keep `AUGUR_GATEWAY_API_KEYS` outside git.
 - Use `router.type: "bandit"` when live learning should guide routing.
 - Enable persistence before relying on learned behavior across restarts.
 - Start with hedging disabled, then tune it with real latency data.
@@ -157,7 +183,6 @@ time to finish during shutdown.
 
 These are still future work:
 
-- built-in auth
 - TLS config
 - streaming responses
 - container and Kubernetes manifests
