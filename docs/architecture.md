@@ -16,7 +16,7 @@ client
 
 ## Request Flow
 
-1. `cmd/augur` loads JSON config and builds the gateway.
+1. `cmd/augur` loads JSON or YAML config and builds the gateway.
 2. `internal/httpapi` parses `/v1/chat/completions` requests.
 3. `internal/dataplane` applies filters such as health, circuit breaking, and
    concurrency limits.
@@ -85,7 +85,7 @@ yet.
 
 Current limits:
 
-- JSON config only
+- JSON and YAML config only
 - non-streaming chat completions only
 - no deployment package or container image in this repo
 - no multi-tenant quota system yet

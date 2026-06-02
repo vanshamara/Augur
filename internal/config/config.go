@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -134,7 +136,69 @@ func LoadFile(path string) (App, error) {
 	if err != nil {
 		return App{}, err
 	}
-	return Parse(data)
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		return ParseYAML(data)
+	default:
+		return Parse(data)
+	}
+}
+
+func ParseYAML(data []byte) (App, error) {
+	var raw any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return App{}, err
+	}
+	normalized, err := normalizeYAML(raw)
+	if err != nil {
+		return App{}, err
+	}
+	jsonData, err := json.Marshal(normalized)
+	if err != nil {
+		return App{}, err
+	}
+	return Parse(jsonData)
+}
+
+func normalizeYAML(value any) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			normalized, err := normalizeYAML(item)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = normalized
+		}
+		return out, nil
+	case map[any]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			text, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("yaml map key %v must be a string", key)
+			}
+			normalized, err := normalizeYAML(item)
+			if err != nil {
+				return nil, err
+			}
+			out[text] = normalized
+		}
+		return out, nil
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			normalized, err := normalizeYAML(item)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = normalized
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
 }
 
 func Parse(data []byte) (App, error) {

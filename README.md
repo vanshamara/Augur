@@ -34,9 +34,9 @@ It has the core pieces in place:
 - LiteLLM-style and Envoy-style local router shims
 
 The core router, policy, learning, replay, config loader, adapter, local HTTP
-endpoint, and learned state persistence are built. It is not yet packaged as a
-production gateway, so it does not include an auth layer, real deployment
-recipes, or tuned production defaults.
+endpoint, gateway auth, and learned state persistence are built. It is not yet
+packaged as a production gateway, so it does not include real deployment
+recipes or tuned production defaults.
 
 ## Requirements
 
@@ -94,16 +94,16 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 Optional environment variables:
 
-- `AUGUR_CONFIG`: path to a JSON config file
+- `AUGUR_CONFIG`: path to a JSON or YAML config file
 - `AUGUR_ADDR`: listen address, default `127.0.0.1:8080`
 - `AUGUR_OPENAI_BASE_URL`: alternate OpenAI-compatible base URL
 - `AUGUR_BACKENDS`: comma-separated backends, either `id=model` or `model`
 
 If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
-The current server supports JSON config files, non-streaming chat completions,
-health and readiness endpoints, live learning, and learned state persistence.
-YAML config and streaming are still future work.
+The current server supports JSON and YAML config files, non-streaming chat
+completions, health and readiness endpoints, live learning, and learned state
+persistence. Streaming is still future work.
 
 Health checks:
 
@@ -118,10 +118,14 @@ Optional gateway auth:
 
 Public config examples:
 
-- `configs/minimal.example.json`: smallest local gateway config
-- `configs/cost-aware.example.json`: cost-aware routing with two backends
-- `configs/augur.example.json`: full local bandit config
-- `configs/deployment.example.json`: deployment-shaped bandit config
+- `configs/minimal.example.json` and `configs/minimal.example.yaml`: smallest
+  local gateway config
+- `configs/cost-aware.example.json` and `configs/cost-aware.example.yaml`:
+  cost-aware routing with two backends
+- `configs/augur.example.json` and `configs/augur.example.yaml`: full local
+  bandit config
+- `configs/deployment.example.json` and `configs/deployment.example.yaml`:
+  deployment-shaped bandit config
 
 With `router.type` set to `bandit`, real responses update the live reward model.
 Set `learning.judge.enabled` to `true` and provide a judge model to add sampled
@@ -210,7 +214,6 @@ Before publishing or pushing changes, scan for keys and tokens.
 The next phase is packaging and hardening:
 
 - production HTTP hardening
-- YAML config support
 - tuned hedging budgets
 - tuned canary thresholds
 - pricing table updates

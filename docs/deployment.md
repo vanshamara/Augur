@@ -22,7 +22,7 @@ go test ./...
 
 ## Config
 
-Use JSON config with `AUGUR_CONFIG`:
+Use JSON or YAML config with `AUGUR_CONFIG`:
 
 ```bash
 export AUGUR_CONFIG="/etc/augur/config.json"
@@ -32,10 +32,13 @@ bin/augur
 
 Public examples are in `configs/`:
 
-- `minimal.example.json`: smallest local gateway config
-- `cost-aware.example.json`: cost-aware routing with two backends
-- `augur.example.json`: full local bandit config
-- `deployment.example.json`: deployment-shaped bandit config
+- `minimal.example.json` and `minimal.example.yaml`: smallest local gateway
+  config
+- `cost-aware.example.json` and `cost-aware.example.yaml`: cost-aware routing
+  with two backends
+- `augur.example.json` and `augur.example.yaml`: full local bandit config
+- `deployment.example.json` and `deployment.example.yaml`: deployment-shaped
+  bandit config
 
 Copy one of those files outside the repo and replace model IDs with real model
 names. Keep API keys in the environment, not in config files.

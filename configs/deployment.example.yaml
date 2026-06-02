@@ -1,0 +1,77 @@
+server:
+  addr: "0.0.0.0:8080"
+  max_body_bytes: 1048576
+  read_timeout: "5s"
+  write_timeout: "30s"
+  idle_timeout: "2m"
+  shutdown_timeout: "10s"
+openai:
+  api_key_env: "OPENAI_API_KEY"
+backends:
+  - id: "fast"
+    model: "your-fast-model-id"
+    input_cost_per_token: 0.0
+    output_cost_per_token: 0.0
+    max_completion_tokens: 512
+  - id: "stable"
+    model: "your-stable-model-id"
+    input_cost_per_token: 0.0
+    output_cost_per_token: 0.0
+    max_completion_tokens: 512
+router:
+  type: "bandit"
+  seed: 7
+  alpha: 0.2
+  p2c_window: 64
+data_plane:
+  filters: ["health", "circuit", "concurrency"]
+  circuit:
+    failure_threshold: 3
+    recovery_after: "2s"
+    half_open_max: 1
+  concurrency:
+    initial_limit: 8
+    min_limit: 1
+    max_limit: 64
+    target_latency_ms: 1200
+  hedge:
+    enabled: false
+    delay: "75ms"
+    max_in_flight: 4
+  single_flight:
+    enabled: true
+    key: "prompt"
+learning:
+  enabled: true
+  tau: "10m"
+  prior_precision: 1.0
+  queue_size: 1024
+  persistence:
+    enabled: true
+    path: "/var/lib/augur/learned-state.json"
+    save_every: 10
+  judge:
+    enabled: false
+    model: "your-judge-model-id"
+    seed: 11
+policy:
+  id: "default"
+  constraints:
+    max_p95_ms: 1200
+    min_quality: 0.85
+    max_error_rate: 0.02
+    quality_gate: "mean"
+  objective:
+    type: "blend"
+    latency_weight: 1.0
+    cost_weight: 1.0
+  exploration:
+    cold_start_budget: 0.03
+    judge_sample_rate: 0.1
+    uncertainty_sampling: true
+  on_infeasible: "best_effort"
+budgets:
+  latency_budget_ms: 1200
+  cost_budget_usd: 0.01
+  max_completion_tokens: 512
+  temperature: 0.2

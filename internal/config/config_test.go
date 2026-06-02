@@ -133,10 +133,118 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseYAMLLoadsGatewayConfig(t *testing.T) {
+	data := []byte(`
+server:
+  addr: "127.0.0.1:9090"
+  max_body_bytes: 65536
+  read_timeout: "4s"
+  write_timeout: "20s"
+  idle_timeout: "1m"
+  shutdown_timeout: "8s"
+openai:
+  base_url: "http://example.test/v1"
+  api_key_env: "AUGUR_KEY"
+backends:
+  - id: "fast"
+    model: "model-fast"
+    input_cost_per_token: 0.001
+    output_cost_per_token: 0.002
+    max_completion_tokens: 128
+router:
+  type: "p2c"
+  seed: 9
+  alpha: 0.3
+  p2c_window: 32
+data_plane:
+  filters: ["health", "circuit", "concurrency"]
+  health:
+    fast: true
+  circuit:
+    failure_threshold: 3
+    recovery_after: "2s"
+    half_open_max: 2
+  concurrency:
+    initial_limit: 8
+    min_limit: 2
+    max_limit: 16
+    target_latency_ms: 900
+  hedge:
+    enabled: true
+    delay: "75ms"
+    max_in_flight: 4
+  single_flight:
+    enabled: true
+    key: "prompt"
+learning:
+  enabled: true
+  tau: "10m"
+  prior_precision: 2
+  queue_size: 256
+  persistence:
+    enabled: true
+    path: ".augur/state.json"
+    save_every: 4
+  judge:
+    enabled: true
+    model: "judge-model"
+    seed: 11
+policy:
+  id: "prod"
+  constraints:
+    max_p95_ms: 1200
+    min_quality: 0.85
+    max_error_rate: 0.02
+    quality_gate: "lcb"
+  objective:
+    type: "blend"
+    latency_weight: 1.2
+    cost_weight: 0.8
+  exploration:
+    cold_start_budget: 0.03
+    judge_sample_rate: 0.1
+    uncertainty_sampling: true
+  on_infeasible: "fail_closed"
+budgets:
+  latency_budget_ms: 1200
+  cost_budget_usd: 0.01
+  max_completion_tokens: 256
+  temperature: 0.2
+`)
+
+	config, err := ParseYAML(data)
+	if err != nil {
+		t.Fatalf("parse yaml config: %v", err)
+	}
+
+	if config.Server.Addr != "127.0.0.1:9090" || config.OpenAI.APIKeyEnv != "AUGUR_KEY" {
+		t.Fatalf("unexpected server/openai config %+v %+v", config.Server, config.OpenAI)
+	}
+	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
+		t.Fatalf("backend got %+v", config.Backends[0])
+	}
+	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
+		t.Fatalf("router got %+v", config.Router)
+	}
+	if config.Policy.Objective.Type != control.BlendObjective || config.Policy.Constraints.QualityGate != control.GateOnLCB {
+		t.Fatalf("policy got %+v", config.Policy)
+	}
+	if !config.Learning.Persistence.Enabled || config.Learning.Persistence.SaveEvery != 4 {
+		t.Fatalf("persistence got %+v", config.Learning.Persistence)
+	}
+}
+
 func TestParseRejectsUnknownFields(t *testing.T) {
 	_, err := Parse([]byte(`{"unknown": true, "backends":[{"model":"model-a"}]}`))
 	if err == nil {
 		t.Fatal("unknown fields should fail")
+	}
+}
+
+func TestParseYAMLRejectsUnknownFields(t *testing.T) {
+	_, err := ParseYAML([]byte("unknown: true\nbackends:\n  - model: model-a\n"))
+	if err == nil {
+		t.Fatal("unknown yaml fields should fail")
 	}
 }
 
@@ -218,11 +326,23 @@ func TestLoadFile(t *testing.T) {
 	}
 }
 
-func TestExampleConfigsLoad(t *testing.T) {
-	paths, err := filepath.Glob("../../configs/*.example.json")
-	if err != nil {
-		t.Fatalf("find example configs: %v", err)
+func TestLoadFileParsesYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.yaml")
+	if err := os.WriteFile(path, []byte("backends:\n  - model: model-a\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
+
+	config, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("load file: %v", err)
+	}
+	if config.Backends[0].Model != "model-a" {
+		t.Fatalf("backend got %+v", config.Backends[0])
+	}
+}
+
+func TestExampleConfigsLoad(t *testing.T) {
+	paths := exampleConfigPaths(t)
 	if len(paths) == 0 {
 		t.Fatal("expected at least one example config")
 	}
@@ -238,4 +358,22 @@ func TestExampleConfigsLoad(t *testing.T) {
 			}
 		})
 	}
+}
+
+func exampleConfigPaths(t *testing.T) []string {
+	t.Helper()
+	patterns := []string{
+		"../../configs/*.example.json",
+		"../../configs/*.example.yaml",
+		"../../configs/*.example.yml",
+	}
+	var paths []string
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			t.Fatalf("find example configs: %v", err)
+		}
+		paths = append(paths, matches...)
+	}
+	return paths
 }
