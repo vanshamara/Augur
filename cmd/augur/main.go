@@ -11,10 +11,13 @@ import (
 	"github.com/vanshamara/Augur/internal/backend"
 	openaibackend "github.com/vanshamara/Augur/internal/backend/openai"
 	appconfig "github.com/vanshamara/Augur/internal/config"
+	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
 	"github.com/vanshamara/Augur/internal/dataplane"
 	"github.com/vanshamara/Augur/internal/httpapi"
+	"github.com/vanshamara/Augur/internal/live"
 	"github.com/vanshamara/Augur/internal/openaiapi"
+	"github.com/vanshamara/Augur/internal/quality"
 	"github.com/vanshamara/Augur/internal/router"
 )
 
@@ -37,7 +40,7 @@ func main() {
 		log.Fatal(err)
 	}
 	ids := backendIDs(config.Backends)
-	route, err := buildRouter(config, ids)
+	routing, err := buildRouter(config, ids)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -48,7 +51,7 @@ func main() {
 	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
 
 	gateway, err := dataplane.New(dataplane.Config{
-		Router:          route,
+		Router:          routing.Router,
 		Backends:        backends,
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
@@ -58,8 +61,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	servingGateway, err := buildLiveGateway(config, gateway, routing.Bandit, client)
+	if err != nil {
+		log.Fatal(err)
+	}
 	server, err := httpapi.New(httpapi.Config{
-		Gateway:  gateway,
+		Gateway:  servingGateway,
 		Defaults: requestDefaults(config.Budgets),
 	})
 	if err != nil {
@@ -153,6 +160,11 @@ func buildBackends(specs []appconfig.Backend, client *openaiapi.Client) ([]backe
 	return backends, nil
 }
 
+type routerBuild struct {
+	Router router.Router
+	Bandit *control.BanditRouter
+}
+
 func backendIDs(backends []appconfig.Backend) []core.BackendID {
 	ids := make([]core.BackendID, len(backends))
 	for i, b := range backends {
@@ -161,26 +173,35 @@ func backendIDs(backends []appconfig.Backend) []core.BackendID {
 	return ids
 }
 
-func buildRouter(config appconfig.App, ids []core.BackendID) (router.Router, error) {
+func buildRouter(config appconfig.App, ids []core.BackendID) (routerBuild, error) {
 	switch config.Router.Type {
 	case "static":
-		return router.NewStatic(ids[0]), nil
+		return routerBuild{Router: router.NewStatic(ids[0])}, nil
 	case "round_robin", "round-robin":
-		return router.NewRoundRobin(), nil
+		return routerBuild{Router: router.NewRoundRobin()}, nil
 	case "least_loaded", "least-loaded":
-		return router.NewLeastLoaded(ids), nil
+		return routerBuild{Router: router.NewLeastLoaded(ids)}, nil
 	case "ewma":
-		return router.NewEWMA(ids, config.Router.Alpha), nil
+		return routerBuild{Router: router.NewEWMA(ids, config.Router.Alpha)}, nil
 	case "cost_aware", "cost-aware":
-		return router.NewCostAware(prices(config)), nil
+		return routerBuild{Router: router.NewCostAware(prices(config))}, nil
 	case "p2c":
-		return router.NewP2CWithWindow(ids, config.Router.Alpha, config.Router.Seed, config.Router.P2CWindow), nil
+		return routerBuild{Router: router.NewP2CWithWindow(ids, config.Router.Alpha, config.Router.Seed, config.Router.P2CWindow)}, nil
 	case "litellm_shuffle", "litellm-shuffle":
-		return router.NewLiteLLMShuffle(config.Router.Weights, config.Router.Seed), nil
+		return routerBuild{Router: router.NewLiteLLMShuffle(config.Router.Weights, config.Router.Seed)}, nil
 	case "envoy_least_request", "envoy-least-request":
-		return router.NewEnvoyLeastRequest(ids, config.Router.Weights, config.Router.Seed), nil
+		return routerBuild{Router: router.NewEnvoyLeastRequest(ids, config.Router.Weights, config.Router.Seed)}, nil
+	case "bandit":
+		bandit := control.NewBanditRouter(control.BanditConfig{
+			Policy:         control.NewPolicy(config.Policy),
+			Backends:       ids,
+			Seed:           config.Router.Seed,
+			Tau:            config.Learning.Tau.Duration,
+			PriorPrecision: config.Learning.PriorPrecision,
+		})
+		return routerBuild{Router: bandit, Bandit: bandit}, nil
 	default:
-		return nil, fmt.Errorf("unsupported router %q", config.Router.Type)
+		return routerBuild{}, fmt.Errorf("unsupported router %q", config.Router.Type)
 	}
 }
 
@@ -268,4 +289,34 @@ func requestDefaults(config appconfig.Budgets) httpapi.RequestDefaults {
 		MaxCompletionTokens: config.MaxCompletionTokens,
 		Temperature:         config.Temperature,
 	}
+}
+
+func buildLiveGateway(config appconfig.App, gateway live.Gateway, bandit *control.BanditRouter, client *openaiapi.Client) (live.Gateway, error) {
+	if !config.Learning.Enabled {
+		return gateway, nil
+	}
+	if bandit == nil {
+		return nil, errors.New("live learning requires router.type to be bandit")
+	}
+
+	var scorer quality.Scorer
+	if config.Learning.Judge.Enabled {
+		judge, err := quality.NewJudgeScorer(quality.JudgeConfig{
+			Model:      config.Learning.Judge.Model,
+			Client:     client,
+			SampleRate: 1,
+			Seed:       config.Learning.Judge.Seed,
+		})
+		if err != nil {
+			return nil, err
+		}
+		scorer = judge
+	}
+	return live.New(live.Config{
+		Gateway:   gateway,
+		Bandit:    bandit,
+		Scorer:    scorer,
+		Seed:      config.Learning.Judge.Seed,
+		QueueSize: config.Learning.QueueSize,
+	})
 }

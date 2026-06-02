@@ -30,6 +30,13 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"hedge": {"enabled": true, "delay": "75ms", "max_in_flight": 4},
 			"single_flight": {"enabled": true, "key": "prompt"}
 		},
+		"learning": {
+			"enabled": true,
+			"tau": "10m",
+			"prior_precision": 2,
+			"queue_size": 256,
+			"judge": {"enabled": true, "model": "judge-model", "seed": 11}
+		},
 		"policy": {
 			"id": "prod",
 			"constraints": {"max_p95_ms": 1200, "min_quality": 0.85, "max_error_rate": 0.02, "quality_gate": "lcb"},
@@ -59,6 +66,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Policy.Objective.Type != control.BlendObjective || config.Policy.Constraints.QualityGate != control.GateOnLCB {
 		t.Fatalf("policy got %+v", config.Policy)
+	}
+	if !config.Learning.Enabled || config.Learning.Judge.Model != "judge-model" || config.Learning.QueueSize != 256 {
+		t.Fatalf("learning got %+v", config.Learning)
 	}
 	if config.Budgets.Temperature == nil || *config.Budgets.Temperature != 0.2 {
 		t.Fatalf("temperature got %v", config.Budgets.Temperature)
@@ -103,6 +113,20 @@ func TestParseRejectsBadSingleFlightKey(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"single_flight":{"enabled":true,"key":"bad"}}}`))
 	if err == nil {
 		t.Fatal("bad single flight key should fail")
+	}
+}
+
+func TestParseRejectsMissingJudgeModel(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true}}}`))
+	if err == nil {
+		t.Fatal("enabled judge should require a model")
+	}
+}
+
+func TestParseRejectsEnabledJudgeWithoutSampleRate(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true,"model":"judge-model"}}}`))
+	if err == nil {
+		t.Fatal("enabled judge should require a positive sample rate")
 	}
 }
 

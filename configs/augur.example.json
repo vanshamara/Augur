@@ -22,7 +22,7 @@
     }
   ],
   "router": {
-    "type": "p2c",
+    "type": "bandit",
     "seed": 7,
     "alpha": 0.2,
     "p2c_window": 64
@@ -48,6 +48,17 @@
     "single_flight": {
       "enabled": true,
       "key": "prompt"
+    }
+  },
+  "learning": {
+    "enabled": true,
+    "tau": "10m",
+    "prior_precision": 1.0,
+    "queue_size": 1024,
+    "judge": {
+      "enabled": false,
+      "model": "your-judge-model-id",
+      "seed": 11
     }
   },
   "policy": {

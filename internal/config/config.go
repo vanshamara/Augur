@@ -21,6 +21,7 @@ type App struct {
 	Backends  []Backend            `json:"backends"`
 	Router    Router               `json:"router"`
 	DataPlane DataPlane            `json:"data_plane"`
+	Learning  Learning             `json:"learning"`
 	Policy    control.PolicyConfig `json:"policy"`
 	Budgets   Budgets              `json:"budgets"`
 }
@@ -58,6 +59,20 @@ type DataPlane struct {
 	SingleFlight SingleFlight               `json:"single_flight"`
 	Health       map[core.BackendID]bool    `json:"health"`
 	Prices       map[core.BackendID]float64 `json:"prices"`
+}
+
+type Learning struct {
+	Enabled        bool     `json:"enabled"`
+	Tau            Duration `json:"tau"`
+	PriorPrecision float64  `json:"prior_precision"`
+	QueueSize      int      `json:"queue_size"`
+	Judge          Judge    `json:"judge"`
+}
+
+type Judge struct {
+	Enabled bool   `json:"enabled"`
+	Model   string `json:"model"`
+	Seed    uint64 `json:"seed"`
 }
 
 type Circuit struct {
@@ -153,12 +168,21 @@ func (a App) withDefaults() (App, error) {
 			return App{}, fmt.Errorf("unsupported single flight key %q", a.DataPlane.SingleFlight.Key)
 		}
 	}
+	if a.Learning.QueueSize <= 0 {
+		a.Learning.QueueSize = 1024
+	}
+	if a.Learning.Judge.Enabled && strings.TrimSpace(a.Learning.Judge.Model) == "" {
+		return App{}, errors.New("learning judge model is required when judge is enabled")
+	}
+	if a.Learning.Judge.Enabled && a.Policy.Exploration.JudgeSampleRate <= 0 {
+		return App{}, errors.New("policy exploration judge_sample_rate must be positive when judge is enabled")
+	}
 	return a, nil
 }
 
 func validateRouter(name string) error {
 	switch name {
-	case "static", "round_robin", "round-robin", "least_loaded", "least-loaded", "ewma", "cost_aware", "cost-aware", "p2c", "litellm_shuffle", "litellm-shuffle", "envoy_least_request", "envoy-least-request":
+	case "static", "round_robin", "round-robin", "least_loaded", "least-loaded", "ewma", "cost_aware", "cost-aware", "p2c", "litellm_shuffle", "litellm-shuffle", "envoy_least_request", "envoy-least-request", "bandit":
 		return nil
 	default:
 		return fmt.Errorf("unsupported router %q", name)

@@ -91,8 +91,23 @@ func TestBuildRouterFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build router: %v", err)
 	}
-	if got := route.Pick(context.Background(), core.Request{ID: "req-1"}, ids); got != "b" {
+	if got := route.Router.Pick(context.Background(), core.Request{ID: "req-1"}, ids); got != "b" {
 		t.Fatalf("router picked %s", got)
+	}
+}
+
+func TestBuildRouterCanBuildBandit(t *testing.T) {
+	routing, err := buildRouter(appconfig.App{
+		Router: appconfig.Router{Type: "bandit", Seed: 7},
+		Backends: []appconfig.Backend{
+			{ID: "a", Model: "model-a"},
+		},
+	}, []core.BackendID{"a"})
+	if err != nil {
+		t.Fatalf("build router: %v", err)
+	}
+	if routing.Bandit == nil || routing.Router.Name() != "bandit" {
+		t.Fatalf("expected bandit routing, got %+v", routing)
 	}
 }
 
@@ -131,5 +146,16 @@ func TestRequestDefaultsFromConfig(t *testing.T) {
 	}
 	if defaults.Temperature == nil || *defaults.Temperature != 0.3 {
 		t.Fatalf("temperature got %v", defaults.Temperature)
+	}
+}
+
+func TestBuildLiveGatewayRequiresBandit(t *testing.T) {
+	_, err := buildLiveGateway(appconfig.App{
+		Learning: appconfig.Learning{
+			Enabled: true,
+		},
+	}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("live learning should require a bandit router")
 	}
 }

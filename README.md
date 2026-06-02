@@ -26,15 +26,16 @@ It has the core pieces in place:
 - baseline routers: static, round-robin, least-loaded, EWMA, cost-aware, and P2C
 - data-plane filters for health, circuits, concurrency, shedding, hedging, and single flight
 - control-plane policy, feasibility gates, bandit learning, quality belief, canary rollback, and attribution
+- live learning from real gateway responses, with optional sampled judge labels
 - distributed learning simulation with async aggregation
 - OpenTelemetry spans and metric hooks
 - OpenAI-compatible backend adapter
 - sampled judge scorer with mocked tests
 - LiteLLM-style and Envoy-style local router shims
 
-The core router, policy, learning, replay, adapter, and local HTTP endpoint are
-built. It is not yet packaged as a production gateway, so it does not include an
-auth layer, full config loader, real deployment recipes, or tuned production
+The core router, policy, learning, replay, config loader, adapter, and local
+HTTP endpoint are built. It is not yet packaged as a production gateway, so it
+does not include an auth layer, real deployment recipes, or tuned production
 defaults.
 
 ## Requirements
@@ -103,6 +104,10 @@ If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 The current server supports JSON config files and non-streaming chat completions.
 YAML config, streaming, and auth are still future work.
 
+With `router.type` set to `bandit`, real responses update the live reward model.
+Set `learning.judge.enabled` to `true` and provide a judge model to add sampled
+quality labels.
+
 ## OpenAI-Compatible Adapter
 
 The real model adapter reads API keys from the environment.
@@ -130,6 +135,7 @@ internal/dataplane          filters, gateway helpers, circuit, limiter, single f
 internal/harness            deterministic replay and reporting
 internal/httpapi            OpenAI-style HTTP API
 internal/learn              single-writer learned state
+internal/live               live reward and quality update loop
 internal/observability      OpenTelemetry observer
 internal/openaiapi          small OpenAI-compatible client
 internal/quality            mock and real judge scorers
