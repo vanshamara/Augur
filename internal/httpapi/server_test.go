@@ -126,6 +126,25 @@ func TestChatCompletionsRejectsStreaming(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRejectsLargeBody(t *testing.T) {
+	server, err := New(Config{
+		Gateway:      &fakeGateway{},
+		MaxBodyBytes: 16,
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestChatCompletionsMapsGatewayErrors(t *testing.T) {
 	server := testServer(t, &fakeGateway{err: dataplane.ErrLoadShed})
 	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
@@ -161,6 +180,38 @@ func TestHealth(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status got %d", rec.Code)
+	}
+}
+
+func TestReady(t *testing.T) {
+	server := testServer(t, &fakeGateway{})
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestReadyCanFail(t *testing.T) {
+	server, err := New(Config{
+		Gateway: &fakeGateway{},
+		Ready: func(ctx context.Context) bool {
+			return false
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
 	}
 }
 

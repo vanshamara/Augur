@@ -10,7 +10,14 @@ import (
 
 func TestParseLoadsGatewayConfig(t *testing.T) {
 	data := []byte(`{
-		"server": {"addr": "127.0.0.1:9090"},
+		"server": {
+			"addr": "127.0.0.1:9090",
+			"max_body_bytes": 65536,
+			"read_timeout": "4s",
+			"write_timeout": "20s",
+			"idle_timeout": "1m",
+			"shutdown_timeout": "8s"
+		},
 		"openai": {"base_url": "http://example.test/v1", "api_key_env": "AUGUR_KEY"},
 		"backends": [
 			{
@@ -56,6 +63,15 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	if config.Server.Addr != "127.0.0.1:9090" || config.OpenAI.APIKeyEnv != "AUGUR_KEY" {
 		t.Fatalf("unexpected server/openai config %+v %+v", config.Server, config.OpenAI)
 	}
+	if config.Server.MaxBodyBytes != 65536 {
+		t.Fatalf("max body bytes got %d", config.Server.MaxBodyBytes)
+	}
+	if config.Server.ReadTimeout.Duration.String() != "4s" || config.Server.WriteTimeout.Duration.String() != "20s" {
+		t.Fatalf("server timeouts got %+v", config.Server)
+	}
+	if config.Server.IdleTimeout.Duration.String() != "1m0s" || config.Server.ShutdownTimeout.Duration.String() != "8s" {
+		t.Fatalf("server timeouts got %+v", config.Server)
+	}
 	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
 		t.Fatalf("backend got %+v", config.Backends[0])
 	}
@@ -87,6 +103,21 @@ func TestParseAppliesDefaults(t *testing.T) {
 
 	if config.Server.Addr != DefaultAddr {
 		t.Fatalf("addr got %q", config.Server.Addr)
+	}
+	if config.Server.MaxBodyBytes != DefaultMaxBodyBytes {
+		t.Fatalf("max body bytes got %d", config.Server.MaxBodyBytes)
+	}
+	if config.Server.ReadTimeout.Duration != DefaultReadTimeout {
+		t.Fatalf("read timeout got %v", config.Server.ReadTimeout.Duration)
+	}
+	if config.Server.WriteTimeout.Duration != DefaultWriteTimeout {
+		t.Fatalf("write timeout got %v", config.Server.WriteTimeout.Duration)
+	}
+	if config.Server.IdleTimeout.Duration != DefaultIdleTimeout {
+		t.Fatalf("idle timeout got %v", config.Server.IdleTimeout.Duration)
+	}
+	if config.Server.ShutdownTimeout.Duration != DefaultShutdownTimeout {
+		t.Fatalf("shutdown timeout got %v", config.Server.ShutdownTimeout.Duration)
 	}
 	if config.OpenAI.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Fatalf("api key env got %q", config.OpenAI.APIKeyEnv)
@@ -120,6 +151,20 @@ func TestParseRejectsBadSingleFlightKey(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"single_flight":{"enabled":true,"key":"bad"}}}`))
 	if err == nil {
 		t.Fatal("bad single flight key should fail")
+	}
+}
+
+func TestParseRejectsNegativeServerLimits(t *testing.T) {
+	_, err := Parse([]byte(`{"server":{"max_body_bytes":-1},"backends":[{"model":"model-a"}]}`))
+	if err == nil {
+		t.Fatal("negative max body bytes should fail")
+	}
+}
+
+func TestParseRejectsNegativeServerTimeouts(t *testing.T) {
+	_, err := Parse([]byte(`{"server":{"read_timeout":"-1s"},"backends":[{"model":"model-a"}]}`))
+	if err == nil {
+		t.Fatal("negative read timeout should fail")
 	}
 }
 

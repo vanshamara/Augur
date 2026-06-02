@@ -13,7 +13,14 @@ import (
 	"github.com/vanshamara/Augur/internal/core"
 )
 
-const DefaultAddr = "127.0.0.1:8080"
+const (
+	DefaultAddr            = "127.0.0.1:8080"
+	DefaultMaxBodyBytes    = 1_048_576
+	DefaultReadTimeout     = 5 * time.Second
+	DefaultWriteTimeout    = 30 * time.Second
+	DefaultIdleTimeout     = 2 * time.Minute
+	DefaultShutdownTimeout = 10 * time.Second
+)
 
 type App struct {
 	Server    Server               `json:"server"`
@@ -27,7 +34,12 @@ type App struct {
 }
 
 type Server struct {
-	Addr string `json:"addr"`
+	Addr            string   `json:"addr"`
+	MaxBodyBytes    int64    `json:"max_body_bytes"`
+	ReadTimeout     Duration `json:"read_timeout"`
+	WriteTimeout    Duration `json:"write_timeout"`
+	IdleTimeout     Duration `json:"idle_timeout"`
+	ShutdownTimeout Duration `json:"shutdown_timeout"`
 }
 
 type OpenAI struct {
@@ -139,6 +151,29 @@ func (a App) withDefaults() (App, error) {
 	if strings.TrimSpace(a.Server.Addr) == "" {
 		a.Server.Addr = DefaultAddr
 	}
+	if a.Server.MaxBodyBytes < 0 {
+		return App{}, errors.New("server max_body_bytes cannot be negative")
+	}
+	if a.Server.MaxBodyBytes == 0 {
+		a.Server.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	var err error
+	a.Server.ReadTimeout, err = defaultServerDuration(a.Server.ReadTimeout, DefaultReadTimeout, "read_timeout")
+	if err != nil {
+		return App{}, err
+	}
+	a.Server.WriteTimeout, err = defaultServerDuration(a.Server.WriteTimeout, DefaultWriteTimeout, "write_timeout")
+	if err != nil {
+		return App{}, err
+	}
+	a.Server.IdleTimeout, err = defaultServerDuration(a.Server.IdleTimeout, DefaultIdleTimeout, "idle_timeout")
+	if err != nil {
+		return App{}, err
+	}
+	a.Server.ShutdownTimeout, err = defaultServerDuration(a.Server.ShutdownTimeout, DefaultShutdownTimeout, "shutdown_timeout")
+	if err != nil {
+		return App{}, err
+	}
 	if strings.TrimSpace(a.OpenAI.APIKeyEnv) == "" {
 		a.OpenAI.APIKeyEnv = "OPENAI_API_KEY"
 	}
@@ -217,6 +252,16 @@ func validateFilters(filters []string) error {
 		}
 	}
 	return nil
+}
+
+func defaultServerDuration(value Duration, fallback time.Duration, name string) (Duration, error) {
+	if value.Duration < 0 {
+		return Duration{}, fmt.Errorf("server %s cannot be negative", name)
+	}
+	if value.Duration == 0 {
+		value.Duration = fallback
+	}
+	return value, nil
 }
 
 func (d *Duration) UnmarshalJSON(data []byte) error {

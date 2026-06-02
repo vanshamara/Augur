@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,6 +54,21 @@ func TestReadConfigUsesDefaults(t *testing.T) {
 	}
 	if config.Server.Addr != appconfig.DefaultAddr {
 		t.Fatalf("addr got %q", config.Server.Addr)
+	}
+	if config.Server.ReadTimeout.Duration != appconfig.DefaultReadTimeout {
+		t.Fatalf("read timeout got %v", config.Server.ReadTimeout.Duration)
+	}
+	if config.Server.WriteTimeout.Duration != appconfig.DefaultWriteTimeout {
+		t.Fatalf("write timeout got %v", config.Server.WriteTimeout.Duration)
+	}
+	if config.Server.IdleTimeout.Duration != appconfig.DefaultIdleTimeout {
+		t.Fatalf("idle timeout got %v", config.Server.IdleTimeout.Duration)
+	}
+	if config.Server.ShutdownTimeout.Duration != appconfig.DefaultShutdownTimeout {
+		t.Fatalf("shutdown timeout got %v", config.Server.ShutdownTimeout.Duration)
+	}
+	if config.Server.MaxBodyBytes != appconfig.DefaultMaxBodyBytes {
+		t.Fatalf("max body bytes got %d", config.Server.MaxBodyBytes)
 	}
 	if config.Backends[0].ID != core.BackendID("a") || config.Backends[0].Model != "model-a" {
 		t.Fatalf("backend got %+v", config.Backends[0])
@@ -196,7 +214,7 @@ func TestBuildLiveGatewayLoadsPersistedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build live gateway: %v", err)
 	}
-	defer closeCommandGateway(gateway)
+	defer closeGateway(gateway)
 
 	state := bandit.LearnedState()
 	if state.Reward.Arms["a"].Updates != 4 {
@@ -216,13 +234,6 @@ func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Resp
 	}, nil
 }
 
-func closeCommandGateway(gateway interface{}) {
-	closer, ok := gateway.(interface{ Close() })
-	if ok {
-		closer.Close()
-	}
-}
-
 func commandLearnedState(id core.BackendID, updates float64) control.LearnedState {
 	at := time.Unix(123, 0)
 	arm := control.LinearArm{
@@ -239,5 +250,74 @@ func commandLearnedState(id core.BackendID, updates float64) control.LearnedStat
 	return control.LearnedState{
 		Reward:  snapshot,
 		Quality: snapshot,
+	}
+}
+
+func TestBuildHTTPServerUsesConfig(t *testing.T) {
+	handler := http.NewServeMux()
+	config := appconfig.Server{
+		Addr: "127.0.0.1:9090",
+		ReadTimeout: appconfig.Duration{
+			Duration: 2 * time.Second,
+		},
+		WriteTimeout: appconfig.Duration{
+			Duration: 3 * time.Second,
+		},
+		IdleTimeout: appconfig.Duration{
+			Duration: 4 * time.Second,
+		},
+	}
+
+	server := buildHTTPServer(config, handler)
+
+	if server.Addr != "127.0.0.1:9090" {
+		t.Fatalf("addr got %q", server.Addr)
+	}
+	if server.ReadTimeout != 2*time.Second {
+		t.Fatalf("read timeout got %v", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 3*time.Second {
+		t.Fatalf("write timeout got %v", server.WriteTimeout)
+	}
+	if server.IdleTimeout != 4*time.Second {
+		t.Fatalf("idle timeout got %v", server.IdleTimeout)
+	}
+}
+
+func TestServeHTTPServerShutsDownGracefully(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- serveHTTPServer(ctx, server, listener, time.Second)
+	}()
+
+	resp, err := http.Get("http://" + listener.Addr().String())
+	if err != nil {
+		t.Fatalf("get server: %v", err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status got %d", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serve server: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not shut down")
 	}
 }

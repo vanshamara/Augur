@@ -19,11 +19,15 @@ type Gateway interface {
 	Call(ctx context.Context, req core.Request) (core.Response, error)
 }
 
+type ReadyFunc func(ctx context.Context) bool
+
 type Config struct {
-	Gateway  Gateway
-	Now      func() time.Time
-	NewID    func() string
-	Defaults RequestDefaults
+	Gateway      Gateway
+	Now          func() time.Time
+	NewID        func() string
+	Ready        ReadyFunc
+	Defaults     RequestDefaults
+	MaxBodyBytes int64
 }
 
 type RequestDefaults struct {
@@ -34,11 +38,13 @@ type RequestDefaults struct {
 }
 
 type Server struct {
-	gateway  Gateway
-	now      func() time.Time
-	newID    func() string
-	defaults RequestDefaults
-	mux      *http.ServeMux
+	gateway      Gateway
+	now          func() time.Time
+	newID        func() string
+	ready        ReadyFunc
+	defaults     RequestDefaults
+	maxBodyBytes int64
+	mux          *http.ServeMux
 }
 
 func New(config Config) (*Server, error) {
@@ -51,10 +57,27 @@ func New(config Config) (*Server, error) {
 	if config.NewID == nil {
 		config.NewID = randomCompletionID
 	}
+	if config.Ready == nil {
+		config.Ready = alwaysReady
+	}
+	if config.MaxBodyBytes < 0 {
+		return nil, errors.New("max body bytes cannot be negative")
+	}
+	if config.MaxBodyBytes == 0 {
+		config.MaxBodyBytes = 1_048_576
+	}
 
-	server := &Server{gateway: config.Gateway, now: config.Now, newID: config.NewID, defaults: config.Defaults}
+	server := &Server{
+		gateway:      config.Gateway,
+		now:          config.Now,
+		newID:        config.NewID,
+		ready:        config.Ready,
+		defaults:     config.Defaults,
+		maxBodyBytes: config.MaxBodyBytes,
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealth)
+	mux.HandleFunc("/readyz", server.handleReady)
 	mux.HandleFunc("/v1/chat/completions", server.handleChatCompletions)
 	server.mux = mux
 	return server, nil
@@ -72,6 +95,18 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		return
+	}
+	if !s.ready(r.Context()) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
@@ -79,7 +114,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body chatCompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, s.maxBodyBytes))
+	if err := decoder.Decode(&body); err != nil {
+		var limitErr *http.MaxBytesError
+		if errors.As(err, &limitErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body is too large")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "request body must be valid JSON")
 		return
 	}
@@ -330,4 +371,8 @@ func randomCompletionID() string {
 		return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	}
 	return "chatcmpl-" + hex.EncodeToString(bytes[:])
+}
+
+func alwaysReady(ctx context.Context) bool {
+	return true
 }

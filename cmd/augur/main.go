@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/vanshamara/Augur/internal/backend"
 	openaibackend "github.com/vanshamara/Augur/internal/backend/openai"
@@ -23,9 +28,18 @@ import (
 )
 
 func main() {
-	config, err := readConfig(os.Getenv)
-	if err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, os.Getenv); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func run(ctx context.Context, getenv func(string) string) error {
+	config, err := readConfig(getenv)
+	if err != nil {
+		return err
 	}
 
 	client, err := openaiapi.New(openaiapi.Config{
@@ -33,21 +47,21 @@ func main() {
 		APIKeyEnv: config.OpenAI.APIKeyEnv,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	backends, err := buildBackends(config.Backends, client)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	ids := backendIDs(config.Backends)
 	routing, err := buildRouter(config, ids)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	filters, err := buildFilters(config, ids)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
 
@@ -60,22 +74,29 @@ func main() {
 		SingleFlightKey: singleFlightKey,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	servingGateway, err := buildLiveGateway(config, gateway, routing.Bandit, client)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	server, err := httpapi.New(httpapi.Config{
-		Gateway:  servingGateway,
-		Defaults: requestDefaults(config.Budgets),
+	defer closeGateway(servingGateway)
+
+	apiServer, err := httpapi.New(httpapi.Config{
+		Gateway:      servingGateway,
+		Defaults:     requestDefaults(config.Budgets),
+		MaxBodyBytes: config.Server.MaxBodyBytes,
+		Ready: func(ctx context.Context) bool {
+			return len(backends) > 0
+		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
+	server := buildHTTPServer(config.Server, apiServer)
 	log.Printf("augur listening on %s", config.Server.Addr)
-	log.Fatal(http.ListenAndServe(config.Server.Addr, server))
+	return runHTTPServer(ctx, server, config.Server.ShutdownTimeout.Duration)
 }
 
 func readConfig(getenv func(string) string) (appconfig.App, error) {
@@ -93,7 +114,12 @@ func readConfig(getenv func(string) string) (appconfig.App, error) {
 	}
 	return appconfig.App{
 		Server: appconfig.Server{
-			Addr: addr,
+			Addr:            addr,
+			MaxBodyBytes:    appconfig.DefaultMaxBodyBytes,
+			ReadTimeout:     appconfig.Duration{Duration: appconfig.DefaultReadTimeout},
+			WriteTimeout:    appconfig.Duration{Duration: appconfig.DefaultWriteTimeout},
+			IdleTimeout:     appconfig.Duration{Duration: appconfig.DefaultIdleTimeout},
+			ShutdownTimeout: appconfig.Duration{Duration: appconfig.DefaultShutdownTimeout},
 		},
 		OpenAI: appconfig.OpenAI{
 			BaseURL:   strings.TrimSpace(getenv("AUGUR_OPENAI_BASE_URL")),
@@ -351,4 +377,56 @@ func buildStateStore(config appconfig.App, bandit *control.BanditRouter) (live.S
 		return nil, err
 	}
 	return store, nil
+}
+
+func buildHTTPServer(config appconfig.Server, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:         config.Addr,
+		Handler:      handler,
+		ReadTimeout:  config.ReadTimeout.Duration,
+		WriteTimeout: config.WriteTimeout.Duration,
+		IdleTimeout:  config.IdleTimeout.Duration,
+	}
+}
+
+func runHTTPServer(ctx context.Context, server *http.Server, shutdownTimeout time.Duration) error {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	return serveHTTPServer(ctx, server, listener, shutdownTimeout)
+}
+
+func serveHTTPServer(ctx context.Context, server *http.Server, listener net.Listener, shutdownTimeout time.Duration) error {
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = appconfig.DefaultShutdownTimeout
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		done <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		return <-done
+	case err := <-done:
+		return err
+	}
+}
+
+func closeGateway(gateway interface{}) {
+	closer, ok := gateway.(interface{ Close() })
+	if ok {
+		closer.Close()
+	}
 }

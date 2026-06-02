@@ -102,8 +102,13 @@ Optional environment variables:
 If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
 The current server supports JSON config files, non-streaming chat completions,
-live learning, and learned state persistence. YAML config, streaming, and auth
-are still future work.
+health and readiness endpoints, live learning, and learned state persistence.
+YAML config, streaming, and auth are still future work.
+
+Health checks:
+
+- `GET /healthz`: process is running
+- `GET /readyz`: gateway is ready to serve traffic
 
 Public config examples:
 

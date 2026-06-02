@@ -89,7 +89,6 @@ Current limits:
 - non-streaming chat completions only
 - no built-in auth layer
 - no deployment package or container image in this repo
-- no health endpoint yet
 - no multi-tenant quota system yet
 
 Those limits are intentional for now. The core router, learning loop, adapter,

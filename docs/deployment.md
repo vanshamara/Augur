@@ -4,7 +4,7 @@ These notes cover a simple Augur process running behind your own network,
 proxy, or platform layer.
 
 Augur currently provides a local HTTP gateway. It does not yet include built-in
-auth, TLS, streaming, or a health endpoint.
+auth, TLS, or streaming.
 
 ## Build
 
@@ -112,6 +112,37 @@ Set the listen address in config:
 Put Augur behind your own ingress, reverse proxy, or service mesh if you need
 TLS, auth, request limits, or access logs.
 
+## Health Checks
+
+Augur exposes two public health endpoints:
+
+- `GET /healthz`: process health
+- `GET /readyz`: config and gateway readiness
+
+Use `/readyz` for load balancer readiness checks. Use `/healthz` when you only
+need to know if the process is alive.
+
+## Server Limits
+
+The `server` block controls process-level HTTP safety settings:
+
+```json
+{
+  "server": {
+    "addr": "0.0.0.0:8080",
+    "max_body_bytes": 1048576,
+    "read_timeout": "5s",
+    "write_timeout": "30s",
+    "idle_timeout": "2m",
+    "shutdown_timeout": "10s"
+  }
+}
+```
+
+`max_body_bytes` limits request body size before JSON decoding. The timeout
+fields protect the server from slow or stuck clients and give in-flight requests
+time to finish during shutdown.
+
 ## Operations Checklist
 
 - Keep `OPENAI_API_KEY` and other provider keys outside git.
@@ -129,7 +160,6 @@ These are still future work:
 - built-in auth
 - TLS config
 - streaming responses
-- health endpoint
 - container and Kubernetes manifests
 - multi-tenant limits
 - production pricing table helpers
