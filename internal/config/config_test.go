@@ -173,12 +173,24 @@ func TestLoadFile(t *testing.T) {
 	}
 }
 
-func TestExampleConfigLoads(t *testing.T) {
-	config, err := LoadFile("../../configs/augur.example.json")
+func TestExampleConfigsLoad(t *testing.T) {
+	paths, err := filepath.Glob("../../configs/*.example.json")
 	if err != nil {
-		t.Fatalf("load example config: %v", err)
+		t.Fatalf("find example configs: %v", err)
 	}
-	if len(config.Backends) != 2 {
-		t.Fatalf("example backends got %d", len(config.Backends))
+	if len(paths) == 0 {
+		t.Fatal("expected at least one example config")
+	}
+
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			config, err := LoadFile(path)
+			if err != nil {
+				t.Fatalf("load example config: %v", err)
+			}
+			if len(config.Backends) == 0 {
+				t.Fatal("example config should define at least one backend")
+			}
+		})
 	}
 }

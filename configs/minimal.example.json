@@ -1,0 +1,24 @@
+{
+  "server": {
+    "addr": "127.0.0.1:8080"
+  },
+  "openai": {
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "backends": [
+    {
+      "id": "primary",
+      "model": "your-model-id",
+      "max_completion_tokens": 512
+    }
+  ],
+  "router": {
+    "type": "round_robin"
+  },
+  "budgets": {
+    "latency_budget_ms": 1200,
+    "cost_budget_usd": 0.01,
+    "max_completion_tokens": 512,
+    "temperature": 0.2
+  }
+}

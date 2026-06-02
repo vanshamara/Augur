@@ -105,6 +105,13 @@ The current server supports JSON config files, non-streaming chat completions,
 live learning, and learned state persistence. YAML config, streaming, and auth
 are still future work.
 
+Public config examples:
+
+- `configs/minimal.example.json`: smallest local gateway config
+- `configs/cost-aware.example.json`: cost-aware routing with two backends
+- `configs/augur.example.json`: full local bandit config
+- `configs/deployment.example.json`: deployment-shaped bandit config
+
 With `router.type` set to `bandit`, real responses update the live reward model.
 Set `learning.judge.enabled` to `true` and provide a judge model to add sampled
 quality labels.
@@ -150,10 +157,16 @@ internal/rng                deterministic random streams
 internal/router             baseline and proxy-style routers
 ```
 
-## Baseline Report
+## Public Docs
 
-See [docs/baseline-report.md](docs/baseline-report.md) for the current comparison
-against the LiteLLM-style and Envoy-style shims.
+Public docs:
+
+- [Architecture](docs/architecture.md)
+- [Deployment notes](docs/deployment.md)
+- [Baseline report](docs/baseline-report.md)
+
+The baseline report compares Augur against the LiteLLM-style and Envoy-style
+shims.
 
 Short version:
 
@@ -188,8 +201,6 @@ The next phase is packaging and hardening:
 - production HTTP hardening
 - production auth
 - YAML config support
-- richer config examples
-- deployment docs
 - tuned hedging budgets
 - tuned canary thresholds
 - pricing table updates
