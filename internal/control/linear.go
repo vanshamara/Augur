@@ -83,6 +83,12 @@ func (m *LinearModel) Snapshot() LinearSnapshot {
 	return m.core.Snapshot()
 }
 
+func (m *LinearModel) Restore(snapshot LinearSnapshot) {
+	m.core.Transform(func(current LinearSnapshot) LinearSnapshot {
+		return snapshot.clone(m.dimension)
+	})
+}
+
 func (m *LinearModel) Predict(id core.BackendID, features []float64, at time.Time) Prediction {
 	return m.Snapshot().Predict(id, features, at, m.tau, m.priorPrecision, m.initialMean, false)
 }

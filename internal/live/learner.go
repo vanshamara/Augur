@@ -20,19 +20,29 @@ type Config struct {
 	Gateway   Gateway
 	Bandit    *control.BanditRouter
 	Scorer    quality.Scorer
+	Store     StateStore
 	Seed      uint64
 	QueueSize int
+	SaveEvery int
+}
+
+type StateStore interface {
+	Save(control.LearnedState) error
 }
 
 type Learner struct {
-	gateway Gateway
-	bandit  *control.BanditRouter
-	scorer  quality.Scorer
-	deriver *rng.Deriver
-	work    chan judgeWork
-	wait    sync.WaitGroup
-	done    chan struct{}
-	closed  atomic.Bool
+	gateway   Gateway
+	bandit    *control.BanditRouter
+	scorer    quality.Scorer
+	store     StateStore
+	deriver   *rng.Deriver
+	work      chan judgeWork
+	wait      sync.WaitGroup
+	saveMu    sync.Mutex
+	done      chan struct{}
+	closed    atomic.Bool
+	seen      atomic.Uint64
+	saveEvery uint64
 }
 
 type judgeWork struct {
@@ -47,14 +57,19 @@ func New(config Config) (*Learner, error) {
 	if config.QueueSize <= 0 {
 		config.QueueSize = 1024
 	}
+	if config.SaveEvery <= 0 {
+		config.SaveEvery = 1
+	}
 
 	learner := &Learner{
-		gateway: config.Gateway,
-		bandit:  config.Bandit,
-		scorer:  config.Scorer,
-		deriver: rng.NewDeriver(config.Seed),
-		work:    make(chan judgeWork, config.QueueSize),
-		done:    make(chan struct{}),
+		gateway:   config.Gateway,
+		bandit:    config.Bandit,
+		scorer:    config.Scorer,
+		store:     config.Store,
+		deriver:   rng.NewDeriver(config.Seed),
+		work:      make(chan judgeWork, config.QueueSize),
+		done:      make(chan struct{}),
+		saveEvery: uint64(config.SaveEvery),
 	}
 	go learner.run()
 	return learner, nil
@@ -62,17 +77,18 @@ func New(config Config) (*Learner, error) {
 
 func (l *Learner) Call(ctx context.Context, req core.Request) (core.Response, error) {
 	resp, err := l.gateway.Call(ctx, req)
-	if err == nil && !resp.Errored {
-		l.enqueue(req, resp)
+	if err == nil {
+		if !resp.Errored {
+			l.enqueue(req, resp)
+		}
+		l.enqueueSave()
 	}
 	return resp, err
 }
 
 func (l *Learner) Flush() {
 	l.wait.Wait()
-	if l.bandit != nil {
-		l.bandit.Flush()
-	}
+	l.saveNow()
 }
 
 func (l *Learner) Close() {
@@ -95,6 +111,34 @@ func (l *Learner) enqueue(req core.Request, resp core.Response) {
 	default:
 		l.wait.Done()
 	}
+}
+
+func (l *Learner) enqueueSave() {
+	if l.bandit == nil || l.store == nil || l.closed.Load() {
+		return
+	}
+	count := l.seen.Add(1)
+	if count%l.saveEvery != 0 {
+		return
+	}
+
+	l.wait.Add(1)
+	go func() {
+		defer l.wait.Done()
+		l.saveNow()
+	}()
+}
+
+func (l *Learner) saveNow() {
+	if l.bandit == nil || l.store == nil {
+		return
+	}
+
+	l.saveMu.Lock()
+	defer l.saveMu.Unlock()
+
+	state := l.bandit.LearnedState()
+	l.store.Save(state)
 }
 
 func (l *Learner) run() {

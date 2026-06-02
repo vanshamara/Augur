@@ -17,6 +17,7 @@ import (
 	"github.com/vanshamara/Augur/internal/httpapi"
 	"github.com/vanshamara/Augur/internal/live"
 	"github.com/vanshamara/Augur/internal/openaiapi"
+	"github.com/vanshamara/Augur/internal/persist"
 	"github.com/vanshamara/Augur/internal/quality"
 	"github.com/vanshamara/Augur/internal/router"
 )
@@ -312,11 +313,42 @@ func buildLiveGateway(config appconfig.App, gateway live.Gateway, bandit *contro
 		}
 		scorer = judge
 	}
+	store, err := buildStateStore(config, bandit)
+	if err != nil {
+		return nil, err
+	}
 	return live.New(live.Config{
 		Gateway:   gateway,
 		Bandit:    bandit,
 		Scorer:    scorer,
+		Store:     store,
 		Seed:      config.Learning.Judge.Seed,
 		QueueSize: config.Learning.QueueSize,
+		SaveEvery: config.Learning.Persistence.SaveEvery,
 	})
+}
+
+func buildStateStore(config appconfig.App, bandit *control.BanditRouter) (live.StateStore, error) {
+	if !config.Learning.Persistence.Enabled {
+		return nil, nil
+	}
+
+	store, err := persist.NewFileStore(persist.FileConfig{
+		Path:     config.Learning.Persistence.Path,
+		PolicyID: control.NewPolicy(config.Policy).ID(),
+		Backends: backendIDs(config.Backends),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	state, err := store.Load()
+	if err == nil {
+		bandit.RestoreLearnedState(state)
+		return store, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return store, nil
 }

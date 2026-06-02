@@ -35,6 +35,7 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"tau": "10m",
 			"prior_precision": 2,
 			"queue_size": 256,
+			"persistence": {"enabled": true, "path": ".augur/state.json", "save_every": 4},
 			"judge": {"enabled": true, "model": "judge-model", "seed": 11}
 		},
 		"policy": {
@@ -70,6 +71,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	if !config.Learning.Enabled || config.Learning.Judge.Model != "judge-model" || config.Learning.QueueSize != 256 {
 		t.Fatalf("learning got %+v", config.Learning)
 	}
+	if !config.Learning.Persistence.Enabled || config.Learning.Persistence.Path != ".augur/state.json" || config.Learning.Persistence.SaveEvery != 4 {
+		t.Fatalf("persistence got %+v", config.Learning.Persistence)
+	}
 	if config.Budgets.Temperature == nil || *config.Budgets.Temperature != 0.2 {
 		t.Fatalf("temperature got %v", config.Budgets.Temperature)
 	}
@@ -89,6 +93,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 	if config.Router.Type != "round_robin" {
 		t.Fatalf("router got %q", config.Router.Type)
+	}
+	if config.Learning.Persistence.SaveEvery != 1 {
+		t.Fatalf("persistence save every got %d", config.Learning.Persistence.SaveEvery)
 	}
 	if config.Backends[0].ID != "model-a" {
 		t.Fatalf("backend id got %q", config.Backends[0].ID)
@@ -127,6 +134,27 @@ func TestParseRejectsEnabledJudgeWithoutSampleRate(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true,"model":"judge-model"}}}`))
 	if err == nil {
 		t.Fatal("enabled judge should require a positive sample rate")
+	}
+}
+
+func TestParseRejectsEnabledPersistenceWithoutLearning(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"persistence":{"enabled":true,"path":".augur/state.json"}}}`))
+	if err == nil {
+		t.Fatal("enabled persistence should require learning")
+	}
+}
+
+func TestParseRejectsEnabledPersistenceWithoutPath(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"enabled":true,"persistence":{"enabled":true}}}`))
+	if err == nil {
+		t.Fatal("enabled persistence should require a path")
+	}
+}
+
+func TestParseRejectsNegativePersistenceSaveEvery(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"enabled":true,"persistence":{"enabled":true,"path":".augur/state.json","save_every":-1}}}`))
+	if err == nil {
+		t.Fatal("negative persistence save_every should fail")
 	}
 }
 

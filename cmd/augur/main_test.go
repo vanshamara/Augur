@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	appconfig "github.com/vanshamara/Augur/internal/config"
+	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/persist"
 )
 
 func TestParseBackends(t *testing.T) {
@@ -157,5 +160,84 @@ func TestBuildLiveGatewayRequiresBandit(t *testing.T) {
 	}, nil, nil, nil)
 	if err == nil {
 		t.Fatal("live learning should require a bandit router")
+	}
+}
+
+func TestBuildLiveGatewayLoadsPersistedState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := persist.NewFileStore(persist.FileConfig{
+		Path:     path,
+		PolicyID: "default",
+		Backends: []core.BackendID{"a"},
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	if err := store.Save(commandLearnedState("a", 4)); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	bandit := control.NewBanditRouter(control.BanditConfig{
+		Policy:   control.NewPolicy(control.PolicyConfig{}),
+		Backends: []core.BackendID{"a"},
+	})
+	gateway, err := buildLiveGateway(appconfig.App{
+		Backends: []appconfig.Backend{
+			{ID: "a", Model: "model-a"},
+		},
+		Learning: appconfig.Learning{
+			Enabled: true,
+			Persistence: appconfig.Persistence{
+				Enabled: true,
+				Path:    path,
+			},
+		},
+	}, fakeCommandGateway{}, bandit, nil)
+	if err != nil {
+		t.Fatalf("build live gateway: %v", err)
+	}
+	defer closeCommandGateway(gateway)
+
+	state := bandit.LearnedState()
+	if state.Reward.Arms["a"].Updates != 4 {
+		t.Fatalf("restored updates got %v", state.Reward.Arms["a"].Updates)
+	}
+}
+
+type fakeCommandGateway struct{}
+
+func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	return core.Response{
+		RequestID: req.ID,
+		Backend:   "a",
+		Outcome: core.Outcome{
+			LatencyMs: 100,
+		},
+	}, nil
+}
+
+func closeCommandGateway(gateway interface{}) {
+	closer, ok := gateway.(interface{ Close() })
+	if ok {
+		closer.Close()
+	}
+}
+
+func commandLearnedState(id core.BackendID, updates float64) control.LearnedState {
+	at := time.Unix(123, 0)
+	arm := control.LinearArm{
+		Precision: []float64{updates},
+		Target:    []float64{updates},
+		Last:      at,
+		Updates:   updates,
+	}
+	snapshot := control.LinearSnapshot{
+		Arms: map[core.BackendID]control.LinearArm{
+			id: arm,
+		},
+	}
+	return control.LearnedState{
+		Reward:  snapshot,
+		Quality: snapshot,
 	}
 }

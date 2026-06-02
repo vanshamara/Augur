@@ -39,6 +39,11 @@ type BanditRouter struct {
 	observer    *observability.Observer
 }
 
+type LearnedState struct {
+	Reward  LinearSnapshot
+	Quality LinearSnapshot
+}
+
 func NewBanditRouter(config BanditConfig) *BanditRouter {
 	if config.Policy == nil {
 		config.Policy = NewPolicy(PolicyConfig{})
@@ -192,6 +197,19 @@ func (b *BanditRouter) RewardModel() *LinearModel {
 
 func (b *BanditRouter) QualityModel() *QualityModel {
 	return b.quality
+}
+
+func (b *BanditRouter) LearnedState() LearnedState {
+	b.Flush()
+	return LearnedState{
+		Reward:  b.reward.Snapshot(),
+		Quality: b.quality.Snapshot(),
+	}
+}
+
+func (b *BanditRouter) RestoreLearnedState(state LearnedState) {
+	b.reward.Restore(state.Reward)
+	b.quality.Restore(state.Quality)
 }
 
 func (b *BanditRouter) Stats() *StatTracker {

@@ -26,17 +26,17 @@ It has the core pieces in place:
 - baseline routers: static, round-robin, least-loaded, EWMA, cost-aware, and P2C
 - data-plane filters for health, circuits, concurrency, shedding, hedging, and single flight
 - control-plane policy, feasibility gates, bandit learning, quality belief, canary rollback, and attribution
-- live learning from real gateway responses, with optional sampled judge labels
+- live learning from real gateway responses, with optional sampled judge labels and saved learned state
 - distributed learning simulation with async aggregation
 - OpenTelemetry spans and metric hooks
 - OpenAI-compatible backend adapter
 - sampled judge scorer with mocked tests
 - LiteLLM-style and Envoy-style local router shims
 
-The core router, policy, learning, replay, config loader, adapter, and local
-HTTP endpoint are built. It is not yet packaged as a production gateway, so it
-does not include an auth layer, real deployment recipes, or tuned production
-defaults.
+The core router, policy, learning, replay, config loader, adapter, local HTTP
+endpoint, and learned state persistence are built. It is not yet packaged as a
+production gateway, so it does not include an auth layer, real deployment
+recipes, or tuned production defaults.
 
 ## Requirements
 
@@ -101,12 +101,18 @@ Optional environment variables:
 
 If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
 
-The current server supports JSON config files and non-streaming chat completions.
-YAML config, streaming, and auth are still future work.
+The current server supports JSON config files, non-streaming chat completions,
+live learning, and learned state persistence. YAML config, streaming, and auth
+are still future work.
 
 With `router.type` set to `bandit`, real responses update the live reward model.
 Set `learning.judge.enabled` to `true` and provide a judge model to add sampled
 quality labels.
+
+Set `learning.persistence.enabled` to `true` to save learned reward and quality
+state across restarts. The example config writes to `.augur/learned-state.json`.
+That file stores learned matrices only. It does not store prompts, responses, or
+API keys.
 
 ## OpenAI-Compatible Adapter
 
@@ -138,6 +144,7 @@ internal/learn              single-writer learned state
 internal/live               live reward and quality update loop
 internal/observability      OpenTelemetry observer
 internal/openaiapi          small OpenAI-compatible client
+internal/persist            learned state file storage
 internal/quality            mock and real judge scorers
 internal/rng                deterministic random streams
 internal/router             baseline and proxy-style routers
@@ -169,6 +176,7 @@ The repo ignores common local secret files:
 - `*.pem`
 - `*.key`
 - `secrets/`
+- `.augur/`
 - `docs-private/`
 
 Before publishing or pushing changes, scan for keys and tokens.
@@ -182,7 +190,6 @@ The next phase is packaging and hardening:
 - YAML config support
 - richer config examples
 - deployment docs
-- CI for tests
 - tuned hedging budgets
 - tuned canary thresholds
 - pricing table updates

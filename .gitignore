@@ -22,6 +22,9 @@ docs-private/
 *.key
 secrets/
 
+# Local Augur runtime state
+.augur/
+
 # Editor and OS files
 .vscode/
 .idea/

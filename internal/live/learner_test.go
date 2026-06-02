@@ -44,6 +44,15 @@ func (s *fakeScorer) Score(ctx context.Context, req core.Request, resp core.Resp
 	return quality.Result{Score: s.score, Reason: "test"}, nil
 }
 
+type fakeStore struct {
+	saves []control.LearnedState
+}
+
+func (s *fakeStore) Save(state control.LearnedState) error {
+	s.saves = append(s.saves, state)
+	return nil
+}
+
 func TestLearnerUpdatesRewardAndQualityFromLiveResponse(t *testing.T) {
 	clk := clock.NewVirtual(time.Unix(0, 0))
 	bandit := control.NewBanditRouter(control.BanditConfig{
@@ -104,6 +113,43 @@ func TestLearnerUpdatesRewardAndQualityFromLiveResponse(t *testing.T) {
 	qualityPrediction := bandit.QualityModel().Predict("a", req, clk.Now())
 	if qualityPrediction.Count <= 0 {
 		t.Fatalf("quality count got %v", qualityPrediction.Count)
+	}
+}
+
+func TestLearnerPersistsLearnedState(t *testing.T) {
+	clk := clock.NewVirtual(time.Unix(0, 0))
+	bandit := control.NewBanditRouter(control.BanditConfig{
+		Policy:   control.NewPolicy(control.PolicyConfig{}),
+		Backends: []core.BackendID{"a"},
+		Clock:    clk,
+	})
+	gateway, err := dataplane.New(dataplane.Config{
+		Router:   bandit,
+		Backends: []backend.Backend{fakeBackend{id: "a"}},
+		Clock:    clk,
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	store := &fakeStore{}
+	learner, err := New(Config{Gateway: gateway, Bandit: bandit, Store: store, SaveEvery: 1})
+	if err != nil {
+		t.Fatalf("new learner: %v", err)
+	}
+	defer learner.Close()
+
+	_, err = learner.Call(context.Background(), core.Request{ID: "req-1", Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("call learner: %v", err)
+	}
+	learner.Flush()
+
+	if len(store.saves) == 0 {
+		t.Fatal("learned state should be saved")
+	}
+	last := store.saves[len(store.saves)-1]
+	if last.Reward.Arms["a"].Updates <= 0 {
+		t.Fatalf("saved reward updates got %v", last.Reward.Arms["a"].Updates)
 	}
 }
 

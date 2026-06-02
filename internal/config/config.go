@@ -62,11 +62,18 @@ type DataPlane struct {
 }
 
 type Learning struct {
-	Enabled        bool     `json:"enabled"`
-	Tau            Duration `json:"tau"`
-	PriorPrecision float64  `json:"prior_precision"`
-	QueueSize      int      `json:"queue_size"`
-	Judge          Judge    `json:"judge"`
+	Enabled        bool        `json:"enabled"`
+	Tau            Duration    `json:"tau"`
+	PriorPrecision float64     `json:"prior_precision"`
+	QueueSize      int         `json:"queue_size"`
+	Persistence    Persistence `json:"persistence"`
+	Judge          Judge       `json:"judge"`
+}
+
+type Persistence struct {
+	Enabled   bool   `json:"enabled"`
+	Path      string `json:"path"`
+	SaveEvery int    `json:"save_every"`
 }
 
 type Judge struct {
@@ -170,6 +177,18 @@ func (a App) withDefaults() (App, error) {
 	}
 	if a.Learning.QueueSize <= 0 {
 		a.Learning.QueueSize = 1024
+	}
+	if a.Learning.Persistence.SaveEvery < 0 {
+		return App{}, errors.New("learning persistence save_every cannot be negative")
+	}
+	if a.Learning.Persistence.SaveEvery == 0 {
+		a.Learning.Persistence.SaveEvery = 1
+	}
+	if a.Learning.Persistence.Enabled && !a.Learning.Enabled {
+		return App{}, errors.New("learning must be enabled when persistence is enabled")
+	}
+	if a.Learning.Persistence.Enabled && strings.TrimSpace(a.Learning.Persistence.Path) == "" {
+		return App{}, errors.New("learning persistence path is required when persistence is enabled")
 	}
 	if a.Learning.Judge.Enabled && strings.TrimSpace(a.Learning.Judge.Model) == "" {
 		return App{}, errors.New("learning judge model is required when judge is enabled")

@@ -32,6 +32,14 @@ func (q *QualityModel) PredictFeatures(id core.BackendID, features []float64, at
 	return snapshot.Predict(id, features, at, q.model.tau, q.model.priorPrecision, q.model.initialMean, true)
 }
 
+func (q *QualityModel) Snapshot() LinearSnapshot {
+	return q.model.Snapshot()
+}
+
+func (q *QualityModel) Restore(snapshot LinearSnapshot) {
+	q.model.Restore(snapshot)
+}
+
 func (q *QualityModel) Flush() {
 	q.model.Flush()
 }
