@@ -36,6 +36,12 @@ func (b *Backend) TrueParams(at time.Time) Params {
 	return b.profile.ParamsAt(at.Sub(b.start))
 }
 
+// CostPerToken is the published price the gateway can see ahead of time. It does not
+// change over time in any profile, so the cost aware router can rely on it.
+func (b *Backend) CostPerToken() float64 {
+	return b.profile.ParamsAt(0).CostPerToken
+}
+
 // Outcome returns the result this backend would produce for the request at the
 // given time. The same inputs always give the same outcome, so two callers asking
 // the same question get the same answer.

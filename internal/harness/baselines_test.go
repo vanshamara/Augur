@@ -3,27 +3,9 @@ package harness
 import (
 	"testing"
 
-	"github.com/vanshamara/Augur/internal/backend/mock"
 	"github.com/vanshamara/Augur/internal/clock"
-	"github.com/vanshamara/Augur/internal/core"
 	"github.com/vanshamara/Augur/internal/router"
 )
-
-func idsOf(backends []*mock.Backend) []core.BackendID {
-	ids := make([]core.BackendID, len(backends))
-	for i, b := range backends {
-		ids[i] = b.ID()
-	}
-	return ids
-}
-
-func pricesOf(backends []*mock.Backend) map[core.BackendID]float64 {
-	prices := make(map[core.BackendID]float64, len(backends))
-	for _, b := range backends {
-		prices[b.ID()] = b.TrueParams(start).CostPerToken
-	}
-	return prices
-}
 
 func TestCostAwareSendsAllToCheapest(t *testing.T) {
 	clk := clock.NewVirtual(start)
