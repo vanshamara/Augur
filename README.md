@@ -32,10 +32,10 @@ It has the core pieces in place:
 - sampled judge scorer with mocked tests
 - LiteLLM-style and Envoy-style local router shims
 
-The core router, policy, learning, replay, and adapter pieces are built. It is
-not yet packaged as a production HTTP gateway, so it does not include a public
-HTTP server, auth layer, config loader, real deployment recipes, or tuned
-production defaults.
+The core router, policy, learning, replay, adapter, and local HTTP endpoint are
+built. It is not yet packaged as a production gateway, so it does not include an
+auth layer, full config loader, real deployment recipes, or tuned production
+defaults.
 
 ## Requirements
 
@@ -66,6 +66,40 @@ The output includes Augur routers plus local LiteLLM-style and Envoy-style
 router shims. These shims are policy comparisons only. They do not measure real
 LiteLLM or Envoy proxy overhead.
 
+## Run The Local Gateway
+
+Set one or more OpenAI-compatible backend models:
+
+```bash
+export OPENAI_API_KEY="..."
+export AUGUR_BACKENDS="fast=your-model-id,stable=your-second-model-id"
+go run ./cmd/augur
+```
+
+By default, the server listens on `127.0.0.1:8080`.
+
+Send a chat completion request:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "augur-chat",
+    "messages": [
+      {"role": "user", "content": "Say hello in one short sentence."}
+    ]
+  }'
+```
+
+Optional environment variables:
+
+- `AUGUR_ADDR`: listen address, default `127.0.0.1:8080`
+- `AUGUR_OPENAI_BASE_URL`: alternate OpenAI-compatible base URL
+- `AUGUR_BACKENDS`: comma-separated backends, either `id=model` or `model`
+
+The current server supports non-streaming chat completions. Streaming, auth, and
+full config files are still future work.
+
 ## OpenAI-Compatible Adapter
 
 The real model adapter reads API keys from the environment.
@@ -81,6 +115,7 @@ docs.
 ## Repository Layout
 
 ```text
+cmd/augur                   local HTTP gateway
 cmd/compare                 comparison runner
 docs/                       public reports
 internal/backend            backend interfaces and implementations
@@ -89,6 +124,7 @@ internal/control            policy, bandit, quality belief, attribution, rollbac
 internal/core               shared request and response types
 internal/dataplane          filters, gateway helpers, circuit, limiter, single flight
 internal/harness            deterministic replay and reporting
+internal/httpapi            OpenAI-style HTTP API
 internal/learn              single-writer learned state
 internal/observability      OpenTelemetry observer
 internal/openaiapi          small OpenAI-compatible client
@@ -131,7 +167,8 @@ Before publishing or pushing changes, scan for keys and tokens.
 
 The next phase is packaging and hardening:
 
-- public HTTP API
+- production HTTP hardening
+- production auth
 - config files and examples
 - deployment docs
 - CI for tests

@@ -19,10 +19,18 @@ type Features struct {
 	UserTier        string
 }
 
+type Message struct {
+	Role    string
+	Content string
+}
+
 type Request struct {
-	ID       string
-	Prompt   string
-	Features Features
+	ID                  string
+	Prompt              string
+	Messages            []Message
+	MaxCompletionTokens int
+	Temperature         *float64
+	Features            Features
 }
 
 // Outcome is what a backend produced for one request: how long it took, what it

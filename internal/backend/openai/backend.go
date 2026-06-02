@@ -57,11 +57,10 @@ func (b *Backend) ID() core.BackendID {
 func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, error) {
 	start := time.Now()
 	result, err := b.client.ChatCompletion(ctx, openaiapi.ChatCompletionRequest{
-		Model: b.model,
-		Messages: []openaiapi.ChatMessage{
-			{Role: "user", Content: req.Prompt},
-		},
-		MaxTokens: b.maxCompletionTokens,
+		Model:       b.model,
+		Messages:    chatMessages(req),
+		Temperature: req.Temperature,
+		MaxTokens:   maxCompletionTokens(req, b.maxCompletionTokens),
 	})
 	if err != nil {
 		return core.Response{RequestID: req.ID, Backend: b.id, Outcome: core.Outcome{LatencyMs: elapsedMs(start), Errored: true}}, err
@@ -82,4 +81,22 @@ func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, er
 
 func elapsedMs(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000
+}
+
+func chatMessages(req core.Request) []openaiapi.ChatMessage {
+	if len(req.Messages) == 0 {
+		return []openaiapi.ChatMessage{{Role: "user", Content: req.Prompt}}
+	}
+	messages := make([]openaiapi.ChatMessage, len(req.Messages))
+	for i, msg := range req.Messages {
+		messages[i] = openaiapi.ChatMessage{Role: msg.Role, Content: msg.Content}
+	}
+	return messages
+}
+
+func maxCompletionTokens(req core.Request, fallback int) int {
+	if req.MaxCompletionTokens > 0 {
+		return req.MaxCompletionTokens
+	}
+	return fallback
 }

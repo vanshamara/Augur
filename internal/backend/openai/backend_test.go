@@ -61,6 +61,51 @@ func TestBackendCallsOpenAICompatibleChat(t *testing.T) {
 	}
 }
 
+func TestBackendPassesMessagesAndOptions(t *testing.T) {
+	var gotBody openaiapi.ChatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	client, err := openaiapi.New(openaiapi.Config{BaseURL: server.URL, APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	backend, err := New(Config{ID: "openai", Model: "test-model", Client: client, MaxCompletionTokens: 16})
+	if err != nil {
+		t.Fatalf("new backend: %v", err)
+	}
+	temperature := 0.2
+
+	_, err = backend.Call(context.Background(), core.Request{
+		ID: "req-1",
+		Messages: []core.Message{
+			{Role: "system", Content: "be brief"},
+			{Role: "user", Content: "hello"},
+		},
+		MaxCompletionTokens: 32,
+		Temperature:         &temperature,
+	})
+	if err != nil {
+		t.Fatalf("call backend: %v", err)
+	}
+
+	if len(gotBody.Messages) != 2 || gotBody.Messages[0].Role != "system" || gotBody.Messages[1].Content != "hello" {
+		t.Fatalf("messages got %+v", gotBody.Messages)
+	}
+	if gotBody.MaxTokens != 32 {
+		t.Fatalf("max tokens got %d", gotBody.MaxTokens)
+	}
+	if gotBody.Temperature == nil || *gotBody.Temperature != 0.2 {
+		t.Fatalf("temperature got %v", gotBody.Temperature)
+	}
+}
+
 func TestBackendMarksAPIErrorAsErrored(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
