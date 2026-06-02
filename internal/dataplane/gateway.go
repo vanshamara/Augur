@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"hash/fnv"
 	"io"
 	"sync/atomic"
 	"time"
@@ -24,9 +25,12 @@ var (
 )
 
 type HedgeConfig struct {
-	Enabled     bool
-	Delay       time.Duration
-	MaxInFlight int64
+	Enabled           bool
+	Delay             time.Duration
+	MaxInFlight       int64
+	BudgetFraction    *float64
+	TriggerPercentile int
+	MaxExtraCalls     int
 }
 
 type Config struct {
@@ -48,6 +52,7 @@ type Gateway struct {
 	clock           clock.Clock
 	hedge           HedgeConfig
 	hedgesInFlight  atomic.Int64
+	hedgeLatencies  *hedgeLatencyTable
 	singleFlight    *SingleFlight
 	singleFlightKey KeyFunc
 	observer        *observability.Observer
@@ -65,6 +70,12 @@ func New(config Config) (*Gateway, error) {
 	}
 	if config.Hedge.Delay <= 0 {
 		config.Hedge.Delay = 50 * time.Millisecond
+	}
+	if config.Hedge.TriggerPercentile <= 0 {
+		config.Hedge.TriggerPercentile = 95
+	}
+	if config.Hedge.MaxExtraCalls <= 0 {
+		config.Hedge.MaxExtraCalls = 1
 	}
 	if config.Observer == nil {
 		config.Observer = observability.Noop()
@@ -85,6 +96,7 @@ func New(config Config) (*Gateway, error) {
 		filters:         append([]Filter(nil), config.Filters...),
 		clock:           config.Clock,
 		hedge:           config.Hedge,
+		hedgeLatencies:  newHedgeLatencyTable(128),
 		singleFlight:    config.SingleFlight,
 		singleFlightKey: config.SingleFlightKey,
 		observer:        config.Observer,
@@ -145,7 +157,7 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 	if len(candidates) == 0 {
 		return core.Response{}, ErrNoCandidates
 	}
-	if !g.hedge.Enabled || len(candidates) == 1 {
+	if !g.shouldHedge(req, candidates) {
 		return g.callRouted(ctx, req, candidates)
 	}
 	return g.callHedged(ctx, req, candidates)
@@ -188,14 +200,15 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 		return core.Response{}, ErrNoCandidates
 	}
 	g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, primary, len(candidates))
-	results := make(chan callResult, 2)
+	results := make(chan callResult, len(candidates))
 	started := 1
 	completed := 0
-	hedged := false
+	extraStarted := 0
+	called := map[core.BackendID]bool{primary: true}
 	var first callResult
 
 	g.startCall(runCtx, req, primary, results, nil)
-	timer := g.clock.After(g.hedge.Delay)
+	timer := g.clock.After(g.hedgeDelay(req, primary))
 
 	for completed < started {
 		select {
@@ -208,20 +221,24 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 				cancel()
 				return result.resp, nil
 			}
-			if !hedged {
-				if g.startHedge(runCtx, req, primary, candidates, results) {
+			if g.canStartExtra(extraStarted, candidates) {
+				if g.startHedge(runCtx, req, called, candidates, results) {
 					started++
-					hedged = true
+					extraStarted++
 				}
 			}
 		case <-timer:
-			if !hedged {
-				if g.startHedge(runCtx, req, primary, candidates, results) {
+			if g.canStartExtra(extraStarted, candidates) {
+				if g.startHedge(runCtx, req, called, candidates, results) {
 					started++
-					hedged = true
+					extraStarted++
 				}
 			}
-			timer = nil
+			if g.canStartExtra(extraStarted, candidates) {
+				timer = g.clock.After(g.hedgeDelay(req, primary))
+			} else {
+				timer = nil
+			}
 		case <-ctx.Done():
 			return core.Response{}, ctx.Err()
 		}
@@ -234,6 +251,54 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 		return first.resp, nil
 	}
 	return core.Response{}, ErrLoadShed
+}
+
+func (g *Gateway) shouldHedge(req core.Request, candidates []core.BackendID) bool {
+	if !g.hedge.Enabled || len(candidates) <= 1 {
+		return false
+	}
+	if g.hedge.MaxExtraCalls <= 0 {
+		return false
+	}
+	budget := g.hedgeBudgetFraction()
+	if budget <= 0 {
+		return false
+	}
+	if budget >= 1 {
+		return true
+	}
+	return stableFraction(req.ID) < budget
+}
+
+func (g *Gateway) hedgeBudgetFraction() float64 {
+	if g.hedge.BudgetFraction == nil {
+		return 1
+	}
+	return clamp(*g.hedge.BudgetFraction, 0, 1)
+}
+
+func (g *Gateway) hedgeDelay(req core.Request, primary core.BackendID) time.Duration {
+	delay := g.hedge.Delay
+	if observed, ok := g.hedgeLatencies.Percentile(primary, g.hedge.TriggerPercentile); ok {
+		delay = observed
+	}
+
+	if req.Features.LatencyBudgetMs <= 0 {
+		return delay
+	}
+
+	latencyBudget := time.Duration(req.Features.LatencyBudgetMs) * time.Millisecond
+	if delay >= latencyBudget {
+		return latencyBudget
+	}
+	return delay
+}
+
+func (g *Gateway) canStartExtra(extraStarted int, candidates []core.BackendID) bool {
+	if extraStarted >= g.hedge.MaxExtraCalls {
+		return false
+	}
+	return extraStarted+1 < len(candidates)
 }
 
 type callResult struct {
@@ -255,8 +320,8 @@ func (g *Gateway) startCall(ctx context.Context, req core.Request, id core.Backe
 	}()
 }
 
-func (g *Gateway) startHedge(ctx context.Context, req core.Request, primary core.BackendID, candidates []core.BackendID, results chan<- callResult) bool {
-	backup, ok := firstBackup(primary, candidates)
+func (g *Gateway) startHedge(ctx context.Context, req core.Request, called map[core.BackendID]bool, candidates []core.BackendID, results chan<- callResult) bool {
+	backup, ok := nextBackup(called, candidates)
 	if !ok {
 		return false
 	}
@@ -264,6 +329,7 @@ func (g *Gateway) startHedge(ctx context.Context, req core.Request, primary core
 	if !ok {
 		return false
 	}
+	called[backup] = true
 	g.observer.RecordRoute(ctx, "data-plane-hedge", g.router.Name(), req.ID, backup, len(candidates))
 	g.startCall(ctx, req, backup, results, release)
 	return true
@@ -322,6 +388,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 		for _, filter := range g.filters {
 			filter.Observe(id, resp, err)
 		}
+	}
+	if err == nil && !resp.Errored && resp.LatencyMs > 0 {
+		g.hedgeLatencies.Observe(id, resp.LatencyMs)
 	}
 	g.observer.RecordResponse(ctx, resp, err)
 	return resp, err
@@ -482,11 +551,27 @@ func without(ids []core.BackendID, drop core.BackendID) []core.BackendID {
 	return out
 }
 
-func firstBackup(primary core.BackendID, candidates []core.BackendID) (core.BackendID, bool) {
+func nextBackup(called map[core.BackendID]bool, candidates []core.BackendID) (core.BackendID, bool) {
 	for _, id := range candidates {
-		if id != primary {
+		if !called[id] {
 			return id, true
 		}
 	}
 	return "", false
+}
+
+func stableFraction(value string) float64 {
+	hash := fnv.New64a()
+	hash.Write([]byte(value))
+	return float64(hash.Sum64()) / float64(^uint64(0))
+}
+
+func clamp(value, low, high float64) float64 {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }

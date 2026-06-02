@@ -235,6 +235,29 @@ func TestRequestDefaultsFromConfig(t *testing.T) {
 	}
 }
 
+func TestBuildHedgeIncludesTuning(t *testing.T) {
+	budget := 0.25
+	config := appconfig.Hedge{
+		Enabled:           true,
+		Delay:             appconfig.Duration{Duration: 75 * time.Millisecond},
+		MaxInFlight:       4,
+		BudgetFraction:    &budget,
+		TriggerPercentile: 95,
+		MaxExtraCalls:     2,
+	}
+
+	hedge := buildHedge(config)
+	if !hedge.Enabled || hedge.Delay != 75*time.Millisecond || hedge.MaxInFlight != 4 {
+		t.Fatalf("hedge got %+v", hedge)
+	}
+	if hedge.BudgetFraction == nil || *hedge.BudgetFraction != 0.25 {
+		t.Fatalf("hedge budget got %+v", hedge)
+	}
+	if hedge.TriggerPercentile != 95 || hedge.MaxExtraCalls != 2 {
+		t.Fatalf("hedge tuning got %+v", hedge)
+	}
+}
+
 func TestBuildLiveGatewayRequiresBandit(t *testing.T) {
 	_, err := buildLiveGateway(appconfig.App{
 		Learning: appconfig.Learning{

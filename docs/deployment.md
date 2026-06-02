@@ -184,6 +184,42 @@ in the request body:
 
 Streaming responses use Server-Sent Events and end with `data: [DONE]`.
 
+## Hedging
+
+Hedging can cut tail latency, but it can also raise spend because the extra
+backend call still costs money. Keep it disabled until you have latency data.
+
+```yaml
+data_plane:
+  hedge:
+    enabled: true
+    delay: "75ms"
+    max_in_flight: 4
+    budget_fraction: 0.10
+    trigger_percentile: 95
+    max_extra_calls: 1
+```
+
+`budget_fraction` limits how much traffic can hedge. `trigger_percentile` uses
+recent successful latency for the chosen backend. `max_extra_calls` caps backup
+calls per request. `max_in_flight` caps concurrent hedge calls for the process.
+
+## Canary Rollback
+
+Canary limits live in the `canary` block:
+
+```yaml
+canary:
+  p95_regression_ratio: 0.20
+  max_error_rate: 0.02
+  min_quality: 0.85
+  min_samples: 20
+```
+
+This means rollback is allowed when the canary has enough samples and any limit
+is breached: p95 is more than 20 percent worse than baseline, error rate is over
+2 percent, or quality is below 0.85.
+
 ## Server Limits
 
 The `server` block controls process-level HTTP safety settings:

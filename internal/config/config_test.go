@@ -34,7 +34,14 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"health": {"fast": true},
 			"circuit": {"failure_threshold": 3, "recovery_after": "2s", "half_open_max": 2},
 			"concurrency": {"initial_limit": 8, "min_limit": 2, "max_limit": 16, "target_latency_ms": 900},
-			"hedge": {"enabled": true, "delay": "75ms", "max_in_flight": 4},
+			"hedge": {
+				"enabled": true,
+				"delay": "75ms",
+				"max_in_flight": 4,
+				"budget_fraction": 0.25,
+				"trigger_percentile": 95,
+				"max_extra_calls": 2
+			},
 			"single_flight": {"enabled": true, "key": "prompt"}
 		},
 		"learning": {
@@ -44,6 +51,12 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"queue_size": 256,
 			"persistence": {"enabled": true, "path": ".augur/state.json", "save_every": 4},
 			"judge": {"enabled": true, "model": "judge-model", "seed": 11}
+		},
+		"canary": {
+			"p95_regression_ratio": 0.25,
+			"max_error_rate": 0.03,
+			"min_quality": 0.80,
+			"min_samples": 40
 		},
 		"policy": {
 			"id": "prod",
@@ -80,6 +93,15 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.DataPlane.Circuit.RecoveryAfter.Duration.String() != "2s" {
 		t.Fatalf("recovery duration got %v", config.DataPlane.Circuit.RecoveryAfter.Duration)
+	}
+	if config.DataPlane.Hedge.BudgetFraction == nil || *config.DataPlane.Hedge.BudgetFraction != 0.25 {
+		t.Fatalf("hedge budget got %+v", config.DataPlane.Hedge)
+	}
+	if config.DataPlane.Hedge.TriggerPercentile != 95 || config.DataPlane.Hedge.MaxExtraCalls != 2 {
+		t.Fatalf("hedge tuning got %+v", config.DataPlane.Hedge)
+	}
+	if config.Canary.P95RegressionRatio != 0.25 || config.Canary.MaxErrorRate != 0.03 || config.Canary.MinSamples != 40 {
+		t.Fatalf("canary got %+v", config.Canary)
 	}
 	if config.Policy.Objective.Type != control.BlendObjective || config.Policy.Constraints.QualityGate != control.GateOnLCB {
 		t.Fatalf("policy got %+v", config.Policy)
@@ -250,6 +272,9 @@ data_plane:
     enabled: true
     delay: "75ms"
     max_in_flight: 4
+    budget_fraction: 0.25
+    trigger_percentile: 95
+    max_extra_calls: 2
   single_flight:
     enabled: true
     key: "prompt"
@@ -266,6 +291,11 @@ learning:
     enabled: true
     model: "judge-model"
     seed: 11
+canary:
+  p95_regression_ratio: 0.25
+  max_error_rate: 0.03
+  min_quality: 0.80
+  min_samples: 40
 policy:
   id: "prod"
   constraints:
@@ -305,6 +335,12 @@ budgets:
 	}
 	if config.Policy.Objective.Type != control.BlendObjective || config.Policy.Constraints.QualityGate != control.GateOnLCB {
 		t.Fatalf("policy got %+v", config.Policy)
+	}
+	if config.DataPlane.Hedge.BudgetFraction == nil || *config.DataPlane.Hedge.BudgetFraction != 0.25 {
+		t.Fatalf("hedge budget got %+v", config.DataPlane.Hedge)
+	}
+	if config.Canary.P95RegressionRatio != 0.25 || config.Canary.MinSamples != 40 {
+		t.Fatalf("canary got %+v", config.Canary)
 	}
 	if !config.Learning.Persistence.Enabled || config.Learning.Persistence.SaveEvery != 4 {
 		t.Fatalf("persistence got %+v", config.Learning.Persistence)
@@ -385,6 +421,37 @@ func TestParseRejectsNegativePersistenceSaveEvery(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"enabled":true,"persistence":{"enabled":true,"path":".augur/state.json","save_every":-1}}}`))
 	if err == nil {
 		t.Fatal("negative persistence save_every should fail")
+	}
+}
+
+func TestParseRejectsInvalidHedgeBudget(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"hedge":{"budget_fraction":1.5}}}`))
+	if err == nil {
+		t.Fatal("bad hedge budget should fail")
+	}
+}
+
+func TestParseRejectsInvalidHedgeTriggerPercentile(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"hedge":{"trigger_percentile":101}}}`))
+	if err == nil {
+		t.Fatal("bad hedge trigger percentile should fail")
+	}
+}
+
+func TestCanaryBuildsRollbackConfig(t *testing.T) {
+	canary := Canary{
+		P95RegressionRatio: 0.30,
+		MaxErrorRate:       0.04,
+		MinQuality:         0.82,
+		MinSamples:         50,
+	}
+
+	rollback := canary.RollbackConfig()
+	if rollback.P95RegressionRatio != 0.30 || rollback.MaxErrorRate != 0.04 {
+		t.Fatalf("rollback config got %+v", rollback)
+	}
+	if rollback.MinQuality != 0.82 || rollback.MinSamples != 50 {
+		t.Fatalf("rollback config got %+v", rollback)
 	}
 }
 

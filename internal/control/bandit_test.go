@@ -156,6 +156,32 @@ func TestRollbackGuardFlagsCanaryRegression(t *testing.T) {
 	}
 }
 
+func TestRollbackGuardUsesConfiguredLimits(t *testing.T) {
+	guard := NewRollbackGuard(RollbackConfig{
+		P95RegressionRatio: 0.50,
+		MaxErrorRate:       0.10,
+		MinQuality:         0.70,
+		MinSamples:         50,
+	})
+	baseline := SLOSnapshot{Samples: 100, P95Ms: 1000, ErrorRate: 0.01, Quality: 0.90}
+
+	if guard.ShouldRollback(baseline, SLOSnapshot{Samples: 49, P95Ms: 2000, ErrorRate: 0.20, Quality: 0.40}) {
+		t.Fatal("low-sample canary should not roll back")
+	}
+	if guard.ShouldRollback(baseline, SLOSnapshot{Samples: 60, P95Ms: 1400, ErrorRate: 0.09, Quality: 0.75}) {
+		t.Fatal("canary inside configured limits should not roll back")
+	}
+	if !guard.ShouldRollback(baseline, SLOSnapshot{Samples: 60, P95Ms: 1600, ErrorRate: 0.09, Quality: 0.75}) {
+		t.Fatal("configured p95 limit should roll back")
+	}
+	if !guard.ShouldRollback(baseline, SLOSnapshot{Samples: 60, P95Ms: 1000, ErrorRate: 0.11, Quality: 0.75}) {
+		t.Fatal("configured error limit should roll back")
+	}
+	if !guard.ShouldRollback(baseline, SLOSnapshot{Samples: 60, P95Ms: 1000, ErrorRate: 0.09, Quality: 0.69}) {
+		t.Fatal("configured quality limit should roll back")
+	}
+}
+
 func TestBanditEmitsTelemetry(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	clk := clock.NewVirtual(start)

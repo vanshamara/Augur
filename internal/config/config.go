@@ -32,6 +32,7 @@ type App struct {
 	DataPlane DataPlane            `json:"data_plane"`
 	Learning  Learning             `json:"learning"`
 	Pricing   Pricing              `json:"pricing"`
+	Canary    Canary               `json:"canary"`
 	Policy    control.PolicyConfig `json:"policy"`
 	Budgets   Budgets              `json:"budgets"`
 }
@@ -120,14 +121,24 @@ type Concurrency struct {
 }
 
 type Hedge struct {
-	Enabled     bool     `json:"enabled"`
-	Delay       Duration `json:"delay"`
-	MaxInFlight int64    `json:"max_in_flight"`
+	Enabled           bool     `json:"enabled"`
+	Delay             Duration `json:"delay"`
+	MaxInFlight       int64    `json:"max_in_flight"`
+	BudgetFraction    *float64 `json:"budget_fraction"`
+	TriggerPercentile int      `json:"trigger_percentile"`
+	MaxExtraCalls     int      `json:"max_extra_calls"`
 }
 
 type SingleFlight struct {
 	Enabled bool   `json:"enabled"`
 	Key     string `json:"key"`
+}
+
+type Canary struct {
+	P95RegressionRatio float64 `json:"p95_regression_ratio"`
+	MaxErrorRate       float64 `json:"max_error_rate"`
+	MinQuality         float64 `json:"min_quality"`
+	MinSamples         int     `json:"min_samples"`
 }
 
 type Budgets struct {
@@ -285,6 +296,17 @@ func (a App) withDefaults() (App, error) {
 			return App{}, fmt.Errorf("unsupported single flight key %q", a.DataPlane.SingleFlight.Key)
 		}
 	}
+	if a.DataPlane.Hedge.BudgetFraction != nil {
+		if *a.DataPlane.Hedge.BudgetFraction < 0 || *a.DataPlane.Hedge.BudgetFraction > 1 {
+			return App{}, errors.New("data_plane hedge budget_fraction must be between 0 and 1")
+		}
+	}
+	if a.DataPlane.Hedge.TriggerPercentile < 0 || a.DataPlane.Hedge.TriggerPercentile > 100 {
+		return App{}, errors.New("data_plane hedge trigger_percentile must be between 0 and 100")
+	}
+	if a.DataPlane.Hedge.MaxExtraCalls < 0 {
+		return App{}, errors.New("data_plane hedge max_extra_calls cannot be negative")
+	}
 	if a.Learning.QueueSize <= 0 {
 		a.Learning.QueueSize = 1024
 	}
@@ -307,6 +329,15 @@ func (a App) withDefaults() (App, error) {
 		return App{}, errors.New("policy exploration judge_sample_rate must be positive when judge is enabled")
 	}
 	return a, nil
+}
+
+func (c Canary) RollbackConfig() control.RollbackConfig {
+	return control.RollbackConfig{
+		P95RegressionRatio: c.P95RegressionRatio,
+		MaxErrorRate:       c.MaxErrorRate,
+		MinQuality:         c.MinQuality,
+		MinSamples:         c.MinSamples,
+	}
 }
 
 func (a *App) applyPricingTable() {

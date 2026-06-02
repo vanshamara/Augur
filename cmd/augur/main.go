@@ -303,9 +303,12 @@ func buildFilters(config appconfig.App, ids []core.BackendID) ([]dataplane.Filte
 
 func buildHedge(config appconfig.Hedge) dataplane.HedgeConfig {
 	return dataplane.HedgeConfig{
-		Enabled:     config.Enabled,
-		Delay:       config.Delay.Duration,
-		MaxInFlight: config.MaxInFlight,
+		Enabled:           config.Enabled,
+		Delay:             config.Delay.Duration,
+		MaxInFlight:       config.MaxInFlight,
+		BudgetFraction:    config.BudgetFraction,
+		TriggerPercentile: config.TriggerPercentile,
+		MaxExtraCalls:     config.MaxExtraCalls,
 	}
 }
 

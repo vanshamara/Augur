@@ -1,6 +1,7 @@
 package control
 
 type SLOSnapshot struct {
+	Samples   int
 	P95Ms     float64
 	ErrorRate float64
 	Quality   float64
@@ -10,6 +11,7 @@ type RollbackConfig struct {
 	P95RegressionRatio float64
 	MaxErrorRate       float64
 	MinQuality         float64
+	MinSamples         int
 }
 
 type RollbackGuard struct {
@@ -23,12 +25,20 @@ func NewRollbackGuard(config RollbackConfig) *RollbackGuard {
 	if config.MaxErrorRate <= 0 {
 		config.MaxErrorRate = 0.02
 	}
+	if config.MinSamples <= 0 {
+		config.MinSamples = 20
+	}
 	return &RollbackGuard{config: config}
 }
 
-// ShouldRollback checks the canary against stubbed SLO thresholds.
+func (r *RollbackGuard) Config() RollbackConfig {
+	return r.config
+}
+
 func (r *RollbackGuard) ShouldRollback(baseline SLOSnapshot, canary SLOSnapshot) bool {
-	// TODO: tune with real traffic.
+	if canary.Samples > 0 && canary.Samples < r.config.MinSamples {
+		return false
+	}
 	if baseline.P95Ms > 0 && canary.P95Ms > baseline.P95Ms*(1+r.config.P95RegressionRatio) {
 		return true
 	}

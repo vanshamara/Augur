@@ -48,7 +48,10 @@
     "hedge": {
       "enabled": false,
       "delay": "75ms",
-      "max_in_flight": 4
+      "max_in_flight": 4,
+      "budget_fraction": 0.10,
+      "trigger_percentile": 95,
+      "max_extra_calls": 1
     },
     "single_flight": {
       "enabled": true,
@@ -70,6 +73,12 @@
       "model": "your-judge-model-id",
       "seed": 11
     }
+  },
+  "canary": {
+    "p95_regression_ratio": 0.20,
+    "max_error_rate": 0.02,
+    "min_quality": 0.85,
+    "min_samples": 20
   },
   "policy": {
     "id": "default",

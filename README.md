@@ -118,6 +118,24 @@ Optional gateway auth:
 
 For streaming responses, set `"stream": true` in the chat completion request.
 
+Hedging is off in the example configs. When enabled, these settings control how
+many extra backend calls Augur can make:
+
+```yaml
+data_plane:
+  hedge:
+    enabled: true
+    delay: "75ms"
+    max_in_flight: 4
+    budget_fraction: 0.10
+    trigger_percentile: 95
+    max_extra_calls: 1
+```
+
+`budget_fraction` is the share of requests allowed to hedge.
+`trigger_percentile` uses recent backend latency to decide when to launch the
+backup call. `max_extra_calls` caps backup calls per request.
+
 Public config examples:
 
 - `configs/minimal.example.json` and `configs/minimal.example.yaml`: smallest
@@ -230,8 +248,6 @@ Before publishing or pushing changes, scan for keys and tokens.
 The next phase is packaging and hardening:
 
 - production HTTP hardening
-- tuned hedging budgets
-- tuned canary thresholds
 - pricing data upkeep
 - multi-tenant limits
 - stronger production safety checks

@@ -250,6 +250,120 @@ func TestGatewayHedgesAndCancelsSlowPrimary(t *testing.T) {
 	})
 }
 
+func TestGatewayDoesNotHedgeWhenDisabled(t *testing.T) {
+	slow := &fakeBackend{id: "slow", delay: 20 * time.Millisecond}
+	fast := &fakeBackend{id: "fast", delay: time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("slow"),
+		Backends: []backend.Backend{slow, fast},
+		Hedge: HedgeConfig{
+			Enabled: false,
+			Delay:   time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "slow" {
+		t.Fatalf("disabled hedge should keep primary, got %s", resp.Backend)
+	}
+	if fast.calls.Load() != 0 {
+		t.Fatalf("disabled hedge made %d extra calls", fast.calls.Load())
+	}
+}
+
+func TestGatewayEnforcesHedgeBudget(t *testing.T) {
+	budget := 0.0
+	slow := &fakeBackend{id: "slow", delay: 20 * time.Millisecond}
+	fast := &fakeBackend{id: "fast", delay: time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("slow"),
+		Backends: []backend.Backend{slow, fast},
+		Hedge: HedgeConfig{
+			Enabled:        true,
+			Delay:          time.Millisecond,
+			BudgetFraction: &budget,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "slow" {
+		t.Fatalf("budgeted hedge should keep primary, got %s", resp.Backend)
+	}
+	if fast.calls.Load() != 0 {
+		t.Fatalf("budgeted hedge made %d extra calls", fast.calls.Load())
+	}
+}
+
+func TestGatewayUsesHedgeTriggerPercentile(t *testing.T) {
+	slow := &fakeBackend{id: "slow", delay: 20 * time.Millisecond}
+	fast := &fakeBackend{id: "fast", delay: time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("slow"),
+		Backends: []backend.Backend{slow, fast},
+		Hedge: HedgeConfig{
+			Enabled:           true,
+			Delay:             time.Millisecond,
+			TriggerPercentile: 50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	gateway.hedgeLatencies.Observe("slow", 80)
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "slow" {
+		t.Fatalf("percentile threshold should keep primary, got %s", resp.Backend)
+	}
+	if fast.calls.Load() != 0 {
+		t.Fatalf("percentile threshold made %d extra calls", fast.calls.Load())
+	}
+}
+
+func TestGatewayHonorsHedgeMaxExtraCalls(t *testing.T) {
+	primary := &fakeBackend{id: "primary", delay: 40 * time.Millisecond}
+	firstBackup := &fakeBackend{id: "backup-1", delay: 40 * time.Millisecond}
+	secondBackup := &fakeBackend{id: "backup-2", delay: time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, firstBackup, secondBackup},
+		Hedge: HedgeConfig{
+			Enabled:       true,
+			Delay:         time.Millisecond,
+			MaxExtraCalls: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if firstBackup.calls.Load() != 1 {
+		t.Fatalf("first backup calls got %d", firstBackup.calls.Load())
+	}
+	if secondBackup.calls.Load() != 0 {
+		t.Fatalf("max extra calls allowed second backup calls: %d", secondBackup.calls.Load())
+	}
+}
+
 func TestSingleFlightDeduplicatesInFlightRequests(t *testing.T) {
 	model := &fakeBackend{id: "a", delay: 50 * time.Millisecond}
 	gateway, err := New(Config{
