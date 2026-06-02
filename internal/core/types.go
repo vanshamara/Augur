@@ -21,6 +21,7 @@ type Features struct {
 
 type Request struct {
 	ID       string
+	Prompt   string
 	Features Features
 }
 
@@ -35,7 +36,8 @@ type Outcome struct {
 
 // Response is an Outcome tagged with the backend that produced it.
 type Response struct {
-	RequestID string
-	Backend   BackendID
+	RequestID  string
+	Backend    BackendID
+	OutputText string
 	Outcome
 }
