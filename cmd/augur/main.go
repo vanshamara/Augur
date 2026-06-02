@@ -10,6 +10,7 @@ import (
 
 	"github.com/vanshamara/Augur/internal/backend"
 	openaibackend "github.com/vanshamara/Augur/internal/backend/openai"
+	appconfig "github.com/vanshamara/Augur/internal/config"
 	"github.com/vanshamara/Augur/internal/core"
 	"github.com/vanshamara/Augur/internal/dataplane"
 	"github.com/vanshamara/Augur/internal/httpapi"
@@ -17,26 +18,16 @@ import (
 	"github.com/vanshamara/Augur/internal/router"
 )
 
-const defaultAddr = "127.0.0.1:8080"
-
-type envConfig struct {
-	Addr     string
-	BaseURL  string
-	Backends []backendSpec
-}
-
-type backendSpec struct {
-	ID    core.BackendID
-	Model string
-}
-
 func main() {
 	config, err := readConfig(os.Getenv)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	client, err := openaiapi.New(openaiapi.Config{BaseURL: config.BaseURL})
+	client, err := openaiapi.New(openaiapi.Config{
+		BaseURL:   config.OpenAI.BaseURL,
+		APIKeyEnv: config.OpenAI.APIKeyEnv,
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -45,46 +36,76 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	ids := backendIDs(config.Backends)
+	route, err := buildRouter(config, ids)
+	if err != nil {
+		log.Fatal(err)
+	}
+	filters, err := buildFilters(config, ids)
+	if err != nil {
+		log.Fatal(err)
+	}
+	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
+
 	gateway, err := dataplane.New(dataplane.Config{
-		Router:   router.NewRoundRobin(),
-		Backends: backends,
+		Router:          route,
+		Backends:        backends,
+		Filters:         filters,
+		Hedge:           buildHedge(config.DataPlane.Hedge),
+		SingleFlight:    singleFlight,
+		SingleFlightKey: singleFlightKey,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	server, err := httpapi.New(httpapi.Config{Gateway: gateway})
+	server, err := httpapi.New(httpapi.Config{
+		Gateway:  gateway,
+		Defaults: requestDefaults(config.Budgets),
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Printf("augur listening on %s", config.Addr)
-	log.Fatal(http.ListenAndServe(config.Addr, server))
+	log.Printf("augur listening on %s", config.Server.Addr)
+	log.Fatal(http.ListenAndServe(config.Server.Addr, server))
 }
 
-func readConfig(getenv func(string) string) (envConfig, error) {
+func readConfig(getenv func(string) string) (appconfig.App, error) {
+	if path := strings.TrimSpace(getenv("AUGUR_CONFIG")); path != "" {
+		return appconfig.LoadFile(path)
+	}
+
 	addr := strings.TrimSpace(getenv("AUGUR_ADDR"))
 	if addr == "" {
-		addr = defaultAddr
+		addr = appconfig.DefaultAddr
 	}
 	backends, err := parseBackends(getenv("AUGUR_BACKENDS"))
 	if err != nil {
-		return envConfig{}, err
+		return appconfig.App{}, err
 	}
-	return envConfig{
-		Addr:     addr,
-		BaseURL:  strings.TrimSpace(getenv("AUGUR_OPENAI_BASE_URL")),
+	return appconfig.App{
+		Server: appconfig.Server{
+			Addr: addr,
+		},
+		OpenAI: appconfig.OpenAI{
+			BaseURL:   strings.TrimSpace(getenv("AUGUR_OPENAI_BASE_URL")),
+			APIKeyEnv: "OPENAI_API_KEY",
+		},
+		Router: appconfig.Router{
+			Type: "round_robin",
+		},
 		Backends: backends,
 	}, nil
 }
 
-func parseBackends(value string) ([]backendSpec, error) {
+func parseBackends(value string) ([]appconfig.Backend, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return nil, errors.New("AUGUR_BACKENDS is required, for example AUGUR_BACKENDS=fast=gpt-4o-mini,stable=gpt-4o")
+		return nil, errors.New("AUGUR_BACKENDS is required, for example AUGUR_BACKENDS=fast=your-model-id,stable=your-second-model-id")
 	}
 
 	parts := strings.Split(value, ",")
-	backends := make([]backendSpec, 0, len(parts))
+	backends := make([]appconfig.Backend, 0, len(parts))
 	for _, part := range parts {
 		spec, err := parseBackendSpec(part)
 		if err != nil {
@@ -95,31 +116,34 @@ func parseBackends(value string) ([]backendSpec, error) {
 	return backends, nil
 }
 
-func parseBackendSpec(value string) (backendSpec, error) {
+func parseBackendSpec(value string) (appconfig.Backend, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return backendSpec{}, errors.New("backend spec cannot be empty")
+		return appconfig.Backend{}, errors.New("backend spec cannot be empty")
 	}
 	if !strings.Contains(value, "=") {
-		return backendSpec{ID: core.BackendID(value), Model: value}, nil
+		return appconfig.Backend{ID: core.BackendID(value), Model: value}, nil
 	}
 
 	parts := strings.SplitN(value, "=", 2)
 	id := strings.TrimSpace(parts[0])
 	model := strings.TrimSpace(parts[1])
 	if id == "" || model == "" {
-		return backendSpec{}, fmt.Errorf("invalid backend spec %q", value)
+		return appconfig.Backend{}, fmt.Errorf("invalid backend spec %q", value)
 	}
-	return backendSpec{ID: core.BackendID(id), Model: model}, nil
+	return appconfig.Backend{ID: core.BackendID(id), Model: model}, nil
 }
 
-func buildBackends(specs []backendSpec, client *openaiapi.Client) ([]backend.Backend, error) {
+func buildBackends(specs []appconfig.Backend, client *openaiapi.Client) ([]backend.Backend, error) {
 	backends := make([]backend.Backend, 0, len(specs))
 	for _, spec := range specs {
 		b, err := openaibackend.New(openaibackend.Config{
-			ID:     spec.ID,
-			Model:  spec.Model,
-			Client: client,
+			ID:                  spec.ID,
+			Model:               spec.Model,
+			Client:              client,
+			InputCostPerToken:   spec.InputCostPerToken,
+			OutputCostPerToken:  spec.OutputCostPerToken,
+			MaxCompletionTokens: spec.MaxCompletionTokens,
 		})
 		if err != nil {
 			return nil, err
@@ -127,4 +151,121 @@ func buildBackends(specs []backendSpec, client *openaiapi.Client) ([]backend.Bac
 		backends = append(backends, b)
 	}
 	return backends, nil
+}
+
+func backendIDs(backends []appconfig.Backend) []core.BackendID {
+	ids := make([]core.BackendID, len(backends))
+	for i, b := range backends {
+		ids[i] = b.ID
+	}
+	return ids
+}
+
+func buildRouter(config appconfig.App, ids []core.BackendID) (router.Router, error) {
+	switch config.Router.Type {
+	case "static":
+		return router.NewStatic(ids[0]), nil
+	case "round_robin", "round-robin":
+		return router.NewRoundRobin(), nil
+	case "least_loaded", "least-loaded":
+		return router.NewLeastLoaded(ids), nil
+	case "ewma":
+		return router.NewEWMA(ids, config.Router.Alpha), nil
+	case "cost_aware", "cost-aware":
+		return router.NewCostAware(prices(config)), nil
+	case "p2c":
+		return router.NewP2CWithWindow(ids, config.Router.Alpha, config.Router.Seed, config.Router.P2CWindow), nil
+	case "litellm_shuffle", "litellm-shuffle":
+		return router.NewLiteLLMShuffle(config.Router.Weights, config.Router.Seed), nil
+	case "envoy_least_request", "envoy-least-request":
+		return router.NewEnvoyLeastRequest(ids, config.Router.Weights, config.Router.Seed), nil
+	default:
+		return nil, fmt.Errorf("unsupported router %q", config.Router.Type)
+	}
+}
+
+func prices(config appconfig.App) map[core.BackendID]float64 {
+	if len(config.DataPlane.Prices) > 0 {
+		return config.DataPlane.Prices
+	}
+	out := make(map[core.BackendID]float64, len(config.Backends))
+	for _, b := range config.Backends {
+		out[b.ID] = pricePerToken(b)
+	}
+	return out
+}
+
+func pricePerToken(backend appconfig.Backend) float64 {
+	if backend.InputCostPerToken > 0 && backend.OutputCostPerToken > 0 {
+		return (backend.InputCostPerToken + backend.OutputCostPerToken) / 2
+	}
+	if backend.OutputCostPerToken > 0 {
+		return backend.OutputCostPerToken
+	}
+	return backend.InputCostPerToken
+}
+
+func buildFilters(config appconfig.App, ids []core.BackendID) ([]dataplane.Filter, error) {
+	filters := make([]dataplane.Filter, 0, len(config.DataPlane.Filters))
+	for _, name := range config.DataPlane.Filters {
+		switch name {
+		case "health":
+			health := dataplane.NewHealthFilter(ids)
+			for id, ok := range config.DataPlane.Health {
+				health.Set(id, ok)
+			}
+			filters = append(filters, health)
+		case "circuit":
+			filters = append(filters, dataplane.NewCircuitBreaker(ids, dataplane.CircuitConfig{
+				FailureThreshold: config.DataPlane.Circuit.FailureThreshold,
+				RecoveryAfter:    config.DataPlane.Circuit.RecoveryAfter.Duration,
+				HalfOpenMax:      config.DataPlane.Circuit.HalfOpenMax,
+			}))
+		case "concurrency":
+			filters = append(filters, dataplane.NewAdaptiveLimiter(ids, dataplane.LimitConfig{
+				InitialLimit:    config.DataPlane.Concurrency.InitialLimit,
+				MinLimit:        config.DataPlane.Concurrency.MinLimit,
+				MaxLimit:        config.DataPlane.Concurrency.MaxLimit,
+				TargetLatencyMs: config.DataPlane.Concurrency.TargetLatencyMs,
+			}))
+		default:
+			return nil, fmt.Errorf("unsupported filter %q", name)
+		}
+	}
+	return filters, nil
+}
+
+func buildHedge(config appconfig.Hedge) dataplane.HedgeConfig {
+	return dataplane.HedgeConfig{
+		Enabled:     config.Enabled,
+		Delay:       config.Delay.Duration,
+		MaxInFlight: config.MaxInFlight,
+	}
+}
+
+func buildSingleFlight(config appconfig.SingleFlight) (*dataplane.SingleFlight, dataplane.KeyFunc) {
+	if !config.Enabled {
+		return nil, nil
+	}
+	switch config.Key {
+	case "prompt":
+		return dataplane.NewSingleFlight(), func(req core.Request) string {
+			return req.Prompt
+		}
+	case "request_id":
+		return dataplane.NewSingleFlight(), func(req core.Request) string {
+			return req.ID
+		}
+	default:
+		return nil, nil
+	}
+}
+
+func requestDefaults(config appconfig.Budgets) httpapi.RequestDefaults {
+	return httpapi.RequestDefaults{
+		LatencyBudgetMs:     config.LatencyBudgetMs,
+		CostBudgetUSD:       config.CostBudgetUSD,
+		MaxCompletionTokens: config.MaxCompletionTokens,
+		Temperature:         config.Temperature,
+	}
 }

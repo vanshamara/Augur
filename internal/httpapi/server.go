@@ -20,16 +20,25 @@ type Gateway interface {
 }
 
 type Config struct {
-	Gateway Gateway
-	Now     func() time.Time
-	NewID   func() string
+	Gateway  Gateway
+	Now      func() time.Time
+	NewID    func() string
+	Defaults RequestDefaults
+}
+
+type RequestDefaults struct {
+	LatencyBudgetMs     int
+	CostBudgetUSD       float64
+	MaxCompletionTokens int
+	Temperature         *float64
 }
 
 type Server struct {
-	gateway Gateway
-	now     func() time.Time
-	newID   func() string
-	mux     *http.ServeMux
+	gateway  Gateway
+	now      func() time.Time
+	newID    func() string
+	defaults RequestDefaults
+	mux      *http.ServeMux
 }
 
 func New(config Config) (*Server, error) {
@@ -43,7 +52,7 @@ func New(config Config) (*Server, error) {
 		config.NewID = randomCompletionID
 	}
 
-	server := &Server{gateway: config.Gateway, now: config.Now, newID: config.NewID}
+	server := &Server{gateway: config.Gateway, now: config.Now, newID: config.NewID, defaults: config.Defaults}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealth)
 	mux.HandleFunc("/v1/chat/completions", server.handleChatCompletions)
@@ -79,7 +88,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req := body.coreRequest(requestID(r), s.newID())
+	req := body.coreRequest(requestID(r), s.newID(), s.defaults)
 	resp, err := s.gateway.Call(r.Context(), req)
 	if err != nil {
 		writeGatewayError(w, err)
@@ -128,7 +137,7 @@ func (r chatCompletionRequest) validate() error {
 	return nil
 }
 
-func (r chatCompletionRequest) coreRequest(id string, fallbackID string) core.Request {
+func (r chatCompletionRequest) coreRequest(id string, fallbackID string, defaults RequestDefaults) core.Request {
 	if id == "" {
 		id = fallbackID
 	}
@@ -141,20 +150,32 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string) core.Re
 		ID:                  id,
 		Prompt:              prompt,
 		Messages:            messages,
-		MaxCompletionTokens: r.maxCompletionTokens(),
-		Temperature:         r.Temperature,
+		MaxCompletionTokens: r.maxCompletionTokens(defaults.MaxCompletionTokens),
+		Temperature:         r.temperature(defaults.Temperature),
 		Features: core.Features{
-			PromptTokens: estimateTokens(prompt),
-			Type:         core.Chat,
+			PromptTokens:    estimateTokens(prompt),
+			Type:            core.Chat,
+			LatencyBudgetMs: defaults.LatencyBudgetMs,
+			CostBudget:      defaults.CostBudgetUSD,
 		},
 	}
 }
 
-func (r chatCompletionRequest) maxCompletionTokens() int {
+func (r chatCompletionRequest) maxCompletionTokens(fallback int) int {
 	if r.MaxCompletionTokens > 0 {
 		return r.MaxCompletionTokens
 	}
-	return r.MaxTokens
+	if r.MaxTokens > 0 {
+		return r.MaxTokens
+	}
+	return fallback
+}
+
+func (r chatCompletionRequest) temperature(fallback *float64) *float64 {
+	if r.Temperature != nil {
+		return r.Temperature
+	}
+	return fallback
 }
 
 func (r chatCompletionRequest) response(req core.Request, resp core.Response, id string, now time.Time) chatCompletionResponse {

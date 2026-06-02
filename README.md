@@ -72,7 +72,7 @@ Set one or more OpenAI-compatible backend models:
 
 ```bash
 export OPENAI_API_KEY="..."
-export AUGUR_BACKENDS="fast=your-model-id,stable=your-second-model-id"
+export AUGUR_CONFIG="configs/augur.example.json"
 go run ./cmd/augur
 ```
 
@@ -93,12 +93,15 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 Optional environment variables:
 
+- `AUGUR_CONFIG`: path to a JSON config file
 - `AUGUR_ADDR`: listen address, default `127.0.0.1:8080`
 - `AUGUR_OPENAI_BASE_URL`: alternate OpenAI-compatible base URL
 - `AUGUR_BACKENDS`: comma-separated backends, either `id=model` or `model`
 
-The current server supports non-streaming chat completions. Streaming, auth, and
-full config files are still future work.
+If `AUGUR_CONFIG` is not set, `AUGUR_BACKENDS` is required.
+
+The current server supports JSON config files and non-streaming chat completions.
+YAML config, streaming, and auth are still future work.
 
 ## OpenAI-Compatible Adapter
 
@@ -117,6 +120,7 @@ docs.
 ```text
 cmd/augur                   local HTTP gateway
 cmd/compare                 comparison runner
+configs/                    example public config files
 docs/                       public reports
 internal/backend            backend interfaces and implementations
 internal/clock              real and virtual clocks
@@ -169,7 +173,8 @@ The next phase is packaging and hardening:
 
 - production HTTP hardening
 - production auth
-- config files and examples
+- YAML config support
+- richer config examples
 - deployment docs
 - CI for tests
 - tuned hedging budgets

@@ -30,30 +30,30 @@ const (
 )
 
 type ConstraintConfig struct {
-	MaxP95Ms     float64
-	MinQuality   float64
-	MaxErrorRate float64
-	QualityGate  GateStatistic
+	MaxP95Ms     float64       `json:"max_p95_ms"`
+	MinQuality   float64       `json:"min_quality"`
+	MaxErrorRate float64       `json:"max_error_rate"`
+	QualityGate  GateStatistic `json:"quality_gate"`
 }
 
 type ObjectiveConfig struct {
-	Type          ObjectiveType
-	LatencyWeight float64
-	CostWeight    float64
+	Type          ObjectiveType `json:"type"`
+	LatencyWeight float64       `json:"latency_weight"`
+	CostWeight    float64       `json:"cost_weight"`
 }
 
 type ExplorationConfig struct {
-	ColdStartBudget     float64
-	JudgeSampleRate     float64
-	UncertaintySampling bool
+	ColdStartBudget     float64 `json:"cold_start_budget"`
+	JudgeSampleRate     float64 `json:"judge_sample_rate"`
+	UncertaintySampling bool    `json:"uncertainty_sampling"`
 }
 
 type PolicyConfig struct {
-	ID           string
-	Constraints  ConstraintConfig
-	Objective    ObjectiveConfig
-	Exploration  ExplorationConfig
-	OnInfeasible InfeasibleAction
+	ID           string            `json:"id"`
+	Constraints  ConstraintConfig  `json:"constraints"`
+	Objective    ObjectiveConfig   `json:"objective"`
+	Exploration  ExplorationConfig `json:"exploration"`
+	OnInfeasible InfeasibleAction  `json:"on_infeasible"`
 }
 
 type Policy struct {

@@ -67,6 +67,9 @@ func TestChatCompletionsRoutesThroughGateway(t *testing.T) {
 	if gateway.req.MaxCompletionTokens != 64 {
 		t.Fatalf("max completion tokens got %d", gateway.req.MaxCompletionTokens)
 	}
+	if gateway.req.Features.LatencyBudgetMs != 1200 || gateway.req.Features.CostBudget != 0.01 {
+		t.Fatalf("budgets got %+v", gateway.req.Features)
+	}
 	if gateway.req.Temperature == nil || *gateway.req.Temperature != 0.2 {
 		t.Fatalf("temperature got %v", gateway.req.Temperature)
 	}
@@ -83,6 +86,30 @@ func TestChatCompletionsRoutesThroughGateway(t *testing.T) {
 	}
 	if got.Usage.CompletionTokens != 7 || got.Usage.TotalTokens <= got.Usage.CompletionTokens {
 		t.Fatalf("unexpected usage %+v", got.Usage)
+	}
+}
+
+func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
+	temperature := 0.4
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server := testServerWithDefaults(t, gateway, RequestDefaults{
+		MaxCompletionTokens: 99,
+		Temperature:         &temperature,
+	})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.MaxCompletionTokens != 99 {
+		t.Fatalf("max completion tokens got %d", gateway.req.MaxCompletionTokens)
+	}
+	if gateway.req.Temperature == nil || *gateway.req.Temperature != 0.4 {
+		t.Fatalf("temperature got %v", gateway.req.Temperature)
 	}
 }
 
@@ -139,8 +166,17 @@ func TestHealth(t *testing.T) {
 
 func testServer(t *testing.T, gateway Gateway) *Server {
 	t.Helper()
+	return testServerWithDefaults(t, gateway, RequestDefaults{
+		LatencyBudgetMs: 1200,
+		CostBudgetUSD:   0.01,
+	})
+}
+
+func testServerWithDefaults(t *testing.T, gateway Gateway, defaults RequestDefaults) *Server {
+	t.Helper()
 	server, err := New(Config{
-		Gateway: gateway,
+		Gateway:  gateway,
+		Defaults: defaults,
 		Now: func() time.Time {
 			return time.Unix(123, 0)
 		},
