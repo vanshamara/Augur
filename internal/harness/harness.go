@@ -6,6 +6,7 @@ import (
 
 	"github.com/vanshamara/Augur/internal/backend/mock"
 	"github.com/vanshamara/Augur/internal/clock"
+	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
 	"github.com/vanshamara/Augur/internal/router"
 )
@@ -63,6 +64,10 @@ func (q *eventQueue) Pop() any {
 // at arrival plus latency so the router sees requests finish in the right order. The
 // same trace and backends always give the same report.
 func Run(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.Virtual) Report {
+	return RunWithPolicy(trace, route, backends, clk, DefaultComparisonPolicy())
+}
+
+func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.Virtual, policy *control.Policy) Report {
 	byID := make(map[core.BackendID]*mock.Backend, len(backends))
 	ids := make([]core.BackendID, 0, len(backends))
 	for _, b := range backends {
@@ -87,15 +92,33 @@ func Run(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.
 		case kindArrival:
 			choice := route.Pick(current.req, ids)
 			chosen := byID[choice]
+			if chosen == nil {
+				rec.record(sample{
+					backend:                     choice,
+					errored:                     true,
+					expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.at),
+					realizedBestLatencyMs:       oracle.RealizedBestLatency(current.req, current.at),
+					violatedConstraint:          true,
+					comparableObjectiveDecision: false,
+					feasibleObjectiveDecision:   false,
+				})
+				continue
+			}
 			outcome := chosen.Outcome(current.req, current.at)
+			policyRegret := oracle.PolicyRegret(current.req, choice, current.at, policy)
 			rec.record(sample{
-				backend:               choice,
-				latencyMs:             outcome.LatencyMs,
-				costUSD:               outcome.CostUSD,
-				quality:               chosen.TrueParams(current.at).Quality,
-				errored:               outcome.Errored,
-				expectedBestLatencyMs: oracle.ExpectedBestLatency(current.at),
-				realizedBestLatencyMs: oracle.RealizedBestLatency(current.req, current.at),
+				backend:                     choice,
+				latencyMs:                   outcome.LatencyMs,
+				costUSD:                     outcome.CostUSD,
+				quality:                     chosen.TrueParams(current.at).Quality,
+				errored:                     outcome.Errored,
+				expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.at),
+				realizedBestLatencyMs:       oracle.RealizedBestLatency(current.req, current.at),
+				objectiveRegret:             policyRegret.ObjectiveRegret,
+				learningCost:                policyRegret.LearningCost,
+				violatedConstraint:          policyRegret.ViolatedConstraint,
+				comparableObjectiveDecision: policyRegret.Comparable,
+				feasibleObjectiveDecision:   policyRegret.ChosenFeasible,
 			})
 			completionAt := current.at.Add(time.Duration(outcome.LatencyMs * float64(time.Millisecond)))
 			heap.Push(queue, event{

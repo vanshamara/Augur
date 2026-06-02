@@ -30,14 +30,17 @@ func BaselineFactories() []RouterFactory {
 // is the paired difference against the reference router, where negative means lower
 // p95 than the reference.
 type RouterStats struct {
-	Router        string
-	P95           Stat
-	P99           Stat
-	Cost          Stat
-	ErrorRate     Stat
-	Quality       Stat
-	LatencyRegret Stat
-	P95Diff       Stat
+	Router                  string
+	P95                     Stat
+	P99                     Stat
+	Cost                    Stat
+	ErrorRate               Stat
+	Quality                 Stat
+	LatencyRegret           Stat
+	ObjectiveRegretFeasible Stat
+	ConstraintViolationRate Stat
+	CostOfLearning          Stat
+	P95Diff                 Stat
 }
 
 type RegimeComparison struct {
@@ -59,6 +62,9 @@ func Compare(regime Regime, factories []RouterFactory, seeds []uint64, requests 
 	errorRate := make([][]float64, len(factories))
 	quality := make([][]float64, len(factories))
 	regret := make([][]float64, len(factories))
+	objectiveRegret := make([][]float64, len(factories))
+	violations := make([][]float64, len(factories))
+	learningCost := make([][]float64, len(factories))
 
 	for _, seed := range seeds {
 		trace := GenerateTrace(seed, requests, start)
@@ -73,6 +79,9 @@ func Compare(regime Regime, factories []RouterFactory, seeds []uint64, requests 
 			errorRate[fi] = append(errorRate[fi], report.ErrorRate)
 			quality[fi] = append(quality[fi], report.MeanQuality)
 			regret[fi] = append(regret[fi], report.LatencyRegretMs)
+			objectiveRegret[fi] = append(objectiveRegret[fi], report.ObjectiveRegretFeasible)
+			violations[fi] = append(violations[fi], report.ConstraintViolationRate)
+			learningCost[fi] = append(learningCost[fi], report.CostOfLearning)
 		}
 	}
 
@@ -82,14 +91,17 @@ func Compare(regime Regime, factories []RouterFactory, seeds []uint64, requests 
 	routers := make([]RouterStats, len(factories))
 	for fi := range factories {
 		routers[fi] = RouterStats{
-			Router:        names[fi],
-			P95:           statOf(p95[fi]),
-			P99:           statOf(p99[fi]),
-			Cost:          statOf(cost[fi]),
-			ErrorRate:     statOf(errorRate[fi]),
-			Quality:       statOf(quality[fi]),
-			LatencyRegret: statOf(regret[fi]),
-			P95Diff:       statOf(pairedDiff(p95[fi], p95[refIndex])),
+			Router:                  names[fi],
+			P95:                     statOf(p95[fi]),
+			P99:                     statOf(p99[fi]),
+			Cost:                    statOf(cost[fi]),
+			ErrorRate:               statOf(errorRate[fi]),
+			Quality:                 statOf(quality[fi]),
+			LatencyRegret:           statOf(regret[fi]),
+			ObjectiveRegretFeasible: statOf(objectiveRegret[fi]),
+			ConstraintViolationRate: statOf(violations[fi]),
+			CostOfLearning:          statOf(learningCost[fi]),
+			P95Diff:                 statOf(pairedDiff(p95[fi], p95[refIndex])),
 		}
 	}
 
@@ -116,20 +128,24 @@ func indexOf(names []string, target string) int {
 func (c RegimeComparison) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "regime=%s  seeds=%d  requests=%d  reference=%s\n", c.Regime, c.Seeds, c.Requests, c.Reference)
-	fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s\n",
-		"router", "p95 ms", "p99 ms", "cost $", "err", "quality", "p95 vs ref ms")
+	fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
+		"router", "p95 ms", "p99 ms", "cost $", "err", "quality", "obj regret", "viol", "learn cost", "p95 vs ref ms")
 	for _, r := range c.Routers {
-		fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s\n",
+		fmt.Fprintf(&b, "%-13s %-15s %-15s %-13s %-12s %-9s %-15s %-12s %-15s %-15s\n",
 			r.Router,
 			cell(r.P95.Mean, r.P95.CIHalf, 0),
 			cell(r.P99.Mean, r.P99.CIHalf, 0),
 			cell(r.Cost.Mean*1e6, r.Cost.CIHalf*1e6, 2),
 			cell(r.ErrorRate.Mean, r.ErrorRate.CIHalf, 3),
 			cell(r.Quality.Mean, r.Quality.CIHalf, 3),
+			cell(r.ObjectiveRegretFeasible.Mean, r.ObjectiveRegretFeasible.CIHalf, 0),
+			cell(r.ConstraintViolationRate.Mean, r.ConstraintViolationRate.CIHalf, 3),
+			cell(r.CostOfLearning.Mean, r.CostOfLearning.CIHalf, 0),
 			cell(r.P95Diff.Mean, r.P95Diff.CIHalf, 0),
 		)
 	}
 	b.WriteString("cost is shown in millionths of a dollar per request\n")
+	b.WriteString("obj regret is policy-relative over feasible choices; learn cost is cumulative objective regret\n")
 	return b.String()
 }
 

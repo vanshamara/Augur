@@ -97,16 +97,19 @@ func (p *Policy) Reward(resp core.Response) float64 {
 	if resp.Errored {
 		return BadOutcomeReward
 	}
+	return -p.ObjectiveCost(resp)
+}
 
+func (p *Policy) ObjectiveCost(resp core.Response) float64 {
 	switch p.config.Objective.Type {
 	case MinimizeCost:
-		return -resp.CostUSD
+		return resp.CostUSD
 	case BlendObjective:
 		latency := p.config.Objective.LatencyWeight * resp.LatencyMs
 		cost := p.config.Objective.CostWeight * resp.CostUSD * 1_000_000
-		return -(latency + cost)
+		return latency + cost
 	default:
-		return -resp.LatencyMs
+		return resp.LatencyMs
 	}
 }
 

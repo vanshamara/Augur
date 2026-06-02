@@ -9,13 +9,18 @@ import (
 )
 
 type sample struct {
-	backend               core.BackendID
-	latencyMs             float64
-	costUSD               float64
-	quality               float64
-	errored               bool
-	expectedBestLatencyMs float64
-	realizedBestLatencyMs float64
+	backend                     core.BackendID
+	latencyMs                   float64
+	costUSD                     float64
+	quality                     float64
+	errored                     bool
+	expectedBestLatencyMs       float64
+	realizedBestLatencyMs       float64
+	objectiveRegret             float64
+	learningCost                float64
+	violatedConstraint          bool
+	comparableObjectiveDecision bool
+	feasibleObjectiveDecision   bool
 }
 
 type recorder struct {
@@ -31,17 +36,21 @@ func (r *recorder) record(s sample) {
 // separate annotation: how much of the latency was just luck that no router could
 // have captured.
 type Report struct {
-	Router           string
-	Count            int
-	LatencyP50       float64
-	LatencyP95       float64
-	LatencyP99       float64
-	MeanCostUSD      float64
-	ErrorRate        float64
-	MeanQuality      float64
-	BackendMix       map[core.BackendID]int
-	LatencyRegretMs  float64
-	RealizationGapMs float64
+	Router                  string
+	Count                   int
+	LatencyP50              float64
+	LatencyP95              float64
+	LatencyP99              float64
+	MeanCostUSD             float64
+	ErrorRate               float64
+	MeanQuality             float64
+	BackendMix              map[core.BackendID]int
+	LatencyRegretMs         float64
+	RealizationGapMs        float64
+	ObjectiveRegretFeasible float64
+	FeasibleObjectiveCount  int
+	ConstraintViolationRate float64
+	CostOfLearning          float64
 }
 
 func (r *recorder) report(routerName string) Report {
@@ -53,13 +62,25 @@ func (r *recorder) report(routerName string) Report {
 
 	latencies := make([]float64, count)
 	var totalCost, totalQuality, totalRegret, totalGap float64
+	var totalObjectiveRegret float64
+	var totalLearningCost float64
 	errored := 0
+	violations := 0
+	feasibleObjectiveCount := 0
 	for i, s := range r.samples {
 		latencies[i] = s.latencyMs
 		totalCost += s.costUSD
 		totalQuality += s.quality
 		totalRegret += s.latencyMs - s.expectedBestLatencyMs
 		totalGap += s.expectedBestLatencyMs - s.realizedBestLatencyMs
+		totalLearningCost += s.learningCost
+		if s.violatedConstraint {
+			violations++
+		}
+		if s.comparableObjectiveDecision && s.feasibleObjectiveDecision {
+			totalObjectiveRegret += s.objectiveRegret
+			feasibleObjectiveCount++
+		}
 		if s.errored {
 			errored++
 		}
@@ -75,6 +96,12 @@ func (r *recorder) report(routerName string) Report {
 	report.ErrorRate = float64(errored) / float64(count)
 	report.LatencyRegretMs = totalRegret / float64(count)
 	report.RealizationGapMs = totalGap / float64(count)
+	report.FeasibleObjectiveCount = feasibleObjectiveCount
+	if feasibleObjectiveCount > 0 {
+		report.ObjectiveRegretFeasible = totalObjectiveRegret / float64(feasibleObjectiveCount)
+	}
+	report.ConstraintViolationRate = float64(violations) / float64(count)
+	report.CostOfLearning = totalLearningCost
 	return report
 }
 
@@ -102,6 +129,9 @@ func (r Report) String() string {
 	fmt.Fprintf(&b, "  error rate      %.3f\n", r.ErrorRate)
 	fmt.Fprintf(&b, "  mean quality    %.3f\n", r.MeanQuality)
 	fmt.Fprintf(&b, "  latency regret  %.1f ms vs expectation oracle\n", r.LatencyRegretMs)
+	fmt.Fprintf(&b, "  objective regret %.1f over %d feasible decisions\n", r.ObjectiveRegretFeasible, r.FeasibleObjectiveCount)
+	fmt.Fprintf(&b, "  constraint viol %.3f\n", r.ConstraintViolationRate)
+	fmt.Fprintf(&b, "  learning cost   %.1f objective units\n", r.CostOfLearning)
 	fmt.Fprintf(&b, "  realization gap %.1f ms (luck floor)\n", r.RealizationGapMs)
 
 	ids := make([]string, 0, len(r.BackendMix))
