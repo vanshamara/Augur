@@ -71,5 +71,5 @@ func (b *Backend) Outcome(req core.Request, at time.Time) core.Outcome {
 // applies the latency in virtual time, so this does not block.
 func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, error) {
 	outcome := b.Outcome(req, b.clk.Now())
-	return core.Response{Backend: b.id, Outcome: outcome}, nil
+	return core.Response{RequestID: req.ID, Backend: b.id, Outcome: outcome}, nil
 }

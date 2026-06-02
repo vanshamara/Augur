@@ -117,6 +117,9 @@ func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates [
 	remaining := copyCandidates(candidates)
 	for len(remaining) > 0 {
 		choice := g.router.Pick(req, remaining)
+		if choice == "" {
+			return core.Response{}, ErrNoCandidates
+		}
 		resp, err := g.callBackend(ctx, req, choice)
 		if !errors.Is(err, ErrLoadShed) {
 			return resp, err
@@ -131,6 +134,9 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 	defer cancel()
 
 	primary := g.router.Pick(req, candidates)
+	if primary == "" {
+		return core.Response{}, ErrNoCandidates
+	}
 	results := make(chan callResult, 2)
 	started := 1
 	completed := 0
@@ -241,6 +247,12 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	}
 
 	resp, err := b.Call(ctx, req)
+	if resp.RequestID == "" {
+		resp.RequestID = req.ID
+	}
+	if resp.Backend == "" {
+		resp.Backend = id
+	}
 	if shouldObserve(err) {
 		if err == nil {
 			g.router.Observe(id, resp)

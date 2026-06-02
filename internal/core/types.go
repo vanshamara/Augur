@@ -35,6 +35,7 @@ type Outcome struct {
 
 // Response is an Outcome tagged with the backend that produced it.
 type Response struct {
-	Backend BackendID
+	RequestID string
+	Backend   BackendID
 	Outcome
 }

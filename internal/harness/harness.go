@@ -103,7 +103,7 @@ func Run(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.
 				seq:    current.seq,
 				kind:   kindCompletion,
 				choice: choice,
-				resp:   core.Response{Backend: choice, Outcome: outcome},
+				resp:   core.Response{RequestID: current.req.ID, Backend: choice, Outcome: outcome},
 			})
 		case kindCompletion:
 			route.Observe(current.choice, current.resp)
