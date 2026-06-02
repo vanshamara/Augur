@@ -1,6 +1,10 @@
 package router
 
-import "github.com/vanshamara/Augur/internal/core"
+import (
+	"context"
+
+	"github.com/vanshamara/Augur/internal/core"
+)
 
 // CostAware sends each request to the backend with the lowest published price per
 // token. Prices are known config, so it needs no signals and never changes its mind.
@@ -16,7 +20,7 @@ func (c *CostAware) Name() string {
 	return "cost-aware"
 }
 
-func (c *CostAware) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (c *CostAware) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
 	best := candidates[0]
 	bestPrice := c.pricePerToken[best]
 	for _, id := range candidates[1:] {
@@ -29,5 +33,5 @@ func (c *CostAware) Pick(req core.Request, candidates []core.BackendID) core.Bac
 	return best
 }
 
-func (c *CostAware) Observe(choice core.BackendID, resp core.Response) {
+func (c *CostAware) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
 }

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"math"
 	"sync/atomic"
 
@@ -60,7 +61,7 @@ func (e *EWMA) Name() string {
 	return "ewma"
 }
 
-func (e *EWMA) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (e *EWMA) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
 	best := candidates[0]
 	bestLatency := math.Inf(1)
 	for _, id := range candidates {
@@ -76,6 +77,6 @@ func (e *EWMA) Pick(req core.Request, candidates []core.BackendID) core.BackendI
 	return best
 }
 
-func (e *EWMA) Observe(choice core.BackendID, resp core.Response) {
+func (e *EWMA) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
 	e.latency[choice].update(resp.LatencyMs, e.alpha)
 }

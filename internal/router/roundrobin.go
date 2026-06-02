@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"sync/atomic"
 
 	"github.com/vanshamara/Augur/internal/core"
@@ -20,10 +21,10 @@ func (r *RoundRobin) Name() string {
 	return "round-robin"
 }
 
-func (r *RoundRobin) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (r *RoundRobin) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
 	index := r.next.Add(1) - 1
 	return candidates[index%uint64(len(candidates))]
 }
 
-func (r *RoundRobin) Observe(choice core.BackendID, resp core.Response) {
+func (r *RoundRobin) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
 }

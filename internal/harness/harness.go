@@ -2,6 +2,7 @@ package harness
 
 import (
 	"container/heap"
+	"context"
 	"time"
 
 	"github.com/vanshamara/Augur/internal/backend/mock"
@@ -90,7 +91,7 @@ func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, c
 
 		switch current.kind {
 		case kindArrival:
-			choice := route.Pick(current.req, ids)
+			choice := route.Pick(context.Background(), current.req, ids)
 			chosen := byID[choice]
 			if chosen == nil {
 				rec.record(sample{
@@ -129,7 +130,7 @@ func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, c
 				resp:   core.Response{RequestID: current.req.ID, Backend: choice, Outcome: outcome},
 			})
 		case kindCompletion:
-			route.Observe(current.choice, current.resp)
+			route.Observe(context.Background(), current.choice, current.resp)
 		}
 	}
 

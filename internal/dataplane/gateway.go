@@ -6,9 +6,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/vanshamara/Augur/internal/backend"
 	"github.com/vanshamara/Augur/internal/clock"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/router"
 )
 
@@ -32,6 +35,7 @@ type Config struct {
 	Hedge           HedgeConfig
 	SingleFlight    *SingleFlight
 	SingleFlightKey KeyFunc
+	Observer        *observability.Observer
 }
 
 type Gateway struct {
@@ -44,6 +48,7 @@ type Gateway struct {
 	hedgesInFlight  atomic.Int64
 	singleFlight    *SingleFlight
 	singleFlightKey KeyFunc
+	observer        *observability.Observer
 }
 
 func New(config Config) (*Gateway, error) {
@@ -58,6 +63,9 @@ func New(config Config) (*Gateway, error) {
 	}
 	if config.Hedge.Delay <= 0 {
 		config.Hedge.Delay = 50 * time.Millisecond
+	}
+	if config.Observer == nil {
+		config.Observer = observability.Noop()
 	}
 
 	ids := make([]core.BackendID, 0, len(config.Backends))
@@ -77,18 +85,29 @@ func New(config Config) (*Gateway, error) {
 		hedge:           config.Hedge,
 		singleFlight:    config.SingleFlight,
 		singleFlightKey: config.SingleFlightKey,
+		observer:        config.Observer,
 	}, nil
 }
 
 // Call routes one request through the filter chain and backend fleet.
 func (g *Gateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	ctx, span := g.observer.Start(ctx, "gateway.call",
+		attribute.String("request.id", req.ID),
+		attribute.String("router.name", g.router.Name()),
+	)
+	defer span.End()
+
 	if g.singleFlight != nil && g.singleFlightKey != nil {
 		key := g.singleFlightKey(req)
-		return g.singleFlight.Do(ctx, key, func() (core.Response, error) {
+		resp, err := g.singleFlight.Do(ctx, key, func() (core.Response, error) {
 			return g.callUnique(ctx, req)
 		})
+		g.recordGatewayError(ctx, resp, err)
+		return resp, err
 	}
-	return g.callUnique(ctx, req)
+	resp, err := g.callUnique(ctx, req)
+	g.recordGatewayError(ctx, resp, err)
+	return resp, err
 }
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
@@ -116,10 +135,11 @@ func (g *Gateway) candidates(req core.Request) []core.BackendID {
 func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates []core.BackendID) (core.Response, error) {
 	remaining := copyCandidates(candidates)
 	for len(remaining) > 0 {
-		choice := g.router.Pick(req, remaining)
+		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
 			return core.Response{}, ErrNoCandidates
 		}
+		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, choice, len(remaining))
 		resp, err := g.callBackend(ctx, req, choice)
 		if !errors.Is(err, ErrLoadShed) {
 			return resp, err
@@ -133,10 +153,11 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	primary := g.router.Pick(req, candidates)
+	primary := g.router.Pick(ctx, req, candidates)
 	if primary == "" {
 		return core.Response{}, ErrNoCandidates
 	}
+	g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, primary, len(candidates))
 	results := make(chan callResult, 2)
 	started := 1
 	completed := 0
@@ -213,6 +234,7 @@ func (g *Gateway) startHedge(ctx context.Context, req core.Request, primary core
 	if !ok {
 		return false
 	}
+	g.observer.RecordRoute(ctx, "data-plane-hedge", g.router.Name(), req.ID, backup, len(candidates))
 	g.startCall(ctx, req, backup, results, release)
 	return true
 }
@@ -235,15 +257,25 @@ func (g *Gateway) acquireHedge() (Release, bool) {
 }
 
 func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.BackendID) (core.Response, error) {
+	ctx, span := g.observer.Start(ctx, "backend.call",
+		attribute.String("request.id", req.ID),
+		attribute.String("backend.id", string(id)),
+	)
+	defer span.End()
+
 	release, ok := g.acquire(id)
 	if !ok {
-		return core.Response{}, ErrLoadShed
+		resp := core.Response{RequestID: req.ID, Backend: id}
+		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
+		return resp, ErrLoadShed
 	}
 	defer release()
 
 	b := g.backends[id]
 	if b == nil {
-		return core.Response{}, ErrMissing
+		resp := core.Response{RequestID: req.ID, Backend: id}
+		g.observer.RecordResponse(ctx, resp, ErrMissing)
+		return resp, ErrMissing
 	}
 
 	resp, err := b.Call(ctx, req)
@@ -255,12 +287,13 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	}
 	if shouldObserve(err) {
 		if err == nil {
-			g.router.Observe(id, resp)
+			g.router.Observe(ctx, id, resp)
 		}
 		for _, filter := range g.filters {
 			filter.Observe(id, resp, err)
 		}
 	}
+	g.observer.RecordResponse(ctx, resp, err)
 	return resp, err
 }
 
@@ -287,6 +320,12 @@ func releaseAll(releases []Release) {
 
 func shouldObserve(err error) bool {
 	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func (g *Gateway) recordGatewayError(ctx context.Context, resp core.Response, err error) {
+	if err != nil && resp.Backend == "" {
+		g.observer.RecordResponse(ctx, resp, err)
+	}
 }
 
 func without(ids []core.BackendID, drop core.BackendID) []core.BackendID {

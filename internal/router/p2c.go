@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"math"
 	"sort"
 	"sync"
@@ -82,7 +83,7 @@ func (p *P2C) Name() string {
 	return "p2c"
 }
 
-func (p *P2C) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (p *P2C) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
 	if len(candidates) == 1 {
 		return candidates[0]
 	}
@@ -110,6 +111,6 @@ func (p *P2C) lowerLatency(a, b core.BackendID) core.BackendID {
 	return b
 }
 
-func (p *P2C) Observe(choice core.BackendID, resp core.Response) {
+func (p *P2C) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
 	p.latency[choice].observe(resp.LatencyMs, p.alpha)
 }

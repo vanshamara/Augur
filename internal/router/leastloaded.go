@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"sync/atomic"
 
 	"github.com/vanshamara/Augur/internal/core"
@@ -26,7 +27,7 @@ func (l *LeastLoaded) Name() string {
 	return "least-loaded"
 }
 
-func (l *LeastLoaded) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (l *LeastLoaded) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
 	best := candidates[0]
 	bestLoad := l.inFlight[best].Load()
 	for _, id := range candidates[1:] {
@@ -40,6 +41,6 @@ func (l *LeastLoaded) Pick(req core.Request, candidates []core.BackendID) core.B
 	return best
 }
 
-func (l *LeastLoaded) Observe(choice core.BackendID, resp core.Response) {
+func (l *LeastLoaded) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
 	l.inFlight[choice].Add(-1)
 }

@@ -1,11 +1,16 @@
 package control
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/vanshamara/Augur/internal/clock"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 )
 
 func TestBanditLogsDecisionPropensities(t *testing.T) {
@@ -22,7 +27,7 @@ func TestBanditLogsDecisionPropensities(t *testing.T) {
 	defer bandit.Close()
 
 	req := request("req-1")
-	choice := bandit.Pick(req, []core.BackendID{"a", "b"})
+	choice := bandit.Pick(context.Background(), req, []core.BackendID{"a", "b"})
 	record, ok := bandit.Attribution().Decision(req.ID)
 	if !ok {
 		t.Fatal("decision should be recorded")
@@ -49,8 +54,8 @@ func TestBanditRewardUpdateJoinsDecisionByRequestID(t *testing.T) {
 	defer bandit.Close()
 
 	req := request("req-1")
-	choice := bandit.Pick(req, []core.BackendID{"a"})
-	bandit.Observe(choice, core.Response{
+	choice := bandit.Pick(context.Background(), req, []core.BackendID{"a"})
+	bandit.Observe(context.Background(), choice, core.Response{
 		RequestID: req.ID,
 		Backend:   choice,
 		Outcome:   core.Outcome{LatencyMs: 100},
@@ -78,7 +83,7 @@ func TestBanditDelayedQualityLabelUsesDecisionTime(t *testing.T) {
 	defer bandit.Close()
 
 	req := request("req-1")
-	bandit.Pick(req, []core.BackendID{"a"})
+	bandit.Pick(context.Background(), req, []core.BackendID{"a"})
 	clk.Advance(10 * time.Second)
 	if !bandit.ObserveQuality(req.ID, 0) {
 		t.Fatal("quality label should join to the decision")
@@ -112,7 +117,7 @@ func TestBanditShadowTrafficUpdatesCounterfactualArm(t *testing.T) {
 	defer bandit.Close()
 
 	req := request("req-1")
-	chosen := bandit.Pick(req, []core.BackendID{"a", "b"})
+	chosen := bandit.Pick(context.Background(), req, []core.BackendID{"a", "b"})
 	record, ok := bandit.Attribution().Decision(req.ID)
 	if !ok {
 		t.Fatal("decision should be recorded")
@@ -149,4 +154,56 @@ func TestRollbackGuardFlagsCanaryRegression(t *testing.T) {
 	if !guard.ShouldRollback(baseline, SLOSnapshot{P95Ms: 1000, ErrorRate: 0.01, Quality: 0.80}) {
 		t.Fatal("quality drop should roll back")
 	}
+}
+
+func TestBanditEmitsTelemetry(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewVirtual(start)
+	recorder := tracetest.NewSpanRecorder()
+	traces := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	bandit := NewBanditRouter(BanditConfig{
+		Policy: NewPolicy(PolicyConfig{
+			Exploration: ExplorationConfig{JudgeSampleRate: 1},
+		}),
+		Backends: []core.BackendID{"a"},
+		Clock:    clk,
+		Seed:     1,
+		Observer: observability.New(observability.Config{
+			Name:           "test",
+			TracerProvider: traces,
+		}),
+	})
+	defer bandit.Close()
+
+	ctx, span := bandit.observer.Start(context.Background(), "request")
+	req := request("req-telemetry")
+	choice := bandit.Pick(ctx, req, []core.BackendID{"a"})
+	bandit.Observe(ctx, choice, core.Response{
+		RequestID: req.ID,
+		Backend:   choice,
+		Outcome:   core.Outcome{LatencyMs: 100},
+	})
+	if !bandit.ObserveQualityWithContext(ctx, req.ID, 0.9) {
+		t.Fatal("quality label should join")
+	}
+	span.End()
+
+	names := controlSpanNames(recorder.Ended())
+	if !names["bandit.pick"] {
+		t.Fatal("bandit pick span was not emitted")
+	}
+	if !names["bandit.reward_update"] {
+		t.Fatal("bandit reward span was not emitted")
+	}
+	if !names["quality.score"] {
+		t.Fatal("quality score span was not emitted")
+	}
+}
+
+func controlSpanNames(spans []sdktrace.ReadOnlySpan) map[string]bool {
+	names := map[string]bool{}
+	for _, span := range spans {
+		names[span.Name()] = true
+	}
+	return names
 }

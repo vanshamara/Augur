@@ -1,10 +1,14 @@
 package control
 
 import (
+	"context"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/vanshamara/Augur/internal/clock"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/rng"
 )
 
@@ -19,6 +23,7 @@ type BanditConfig struct {
 	PriorPrecision float64
 	StatsWindow    int
 	Shadow         ShadowFunc
+	Observer       *observability.Observer
 }
 
 type BanditRouter struct {
@@ -31,6 +36,7 @@ type BanditRouter struct {
 	quality     *QualityModel
 	attribution *AttributionLog
 	shadow      ShadowFunc
+	observer    *observability.Observer
 }
 
 func NewBanditRouter(config BanditConfig) *BanditRouter {
@@ -45,6 +51,9 @@ func NewBanditRouter(config BanditConfig) *BanditRouter {
 	}
 	if config.PriorPrecision <= 0 {
 		config.PriorPrecision = 1
+	}
+	if config.Observer == nil {
+		config.Observer = observability.Noop()
 	}
 
 	linearConfig := LinearConfig{
@@ -65,6 +74,7 @@ func NewBanditRouter(config BanditConfig) *BanditRouter {
 		quality:     NewQualityModel(linearConfig),
 		attribution: NewAttributionLog(),
 		shadow:      config.Shadow,
+		observer:    config.Observer,
 	}
 }
 
@@ -72,7 +82,14 @@ func (b *BanditRouter) Name() string {
 	return "bandit"
 }
 
-func (b *BanditRouter) Pick(req core.Request, candidates []core.BackendID) core.BackendID {
+func (b *BanditRouter) Pick(ctx context.Context, req core.Request, candidates []core.BackendID) core.BackendID {
+	ctx, span := b.observer.Start(ctx, "bandit.pick",
+		attribute.String("request.id", req.ID),
+		attribute.String("policy.id", b.policy.ID()),
+		attribute.Int("candidate.count", len(candidates)),
+	)
+	defer span.End()
+
 	at := b.clock.Now()
 	features := EncodeFeatures(req)
 	decision := b.gate.Filter(req, candidates, b.stats.Snapshot(), b.quality, at)
@@ -82,7 +99,8 @@ func (b *BanditRouter) Pick(req core.Request, candidates []core.BackendID) core.
 
 	chosen := b.choose(req, features, decision.Candidates, at)
 	judgingPropensity := b.judgingPropensity(req, chosen, at)
-	shadows := b.applyShadow(req, chosen, decision.Candidates, at)
+	shadows := b.applyShadow(ctx, req, chosen, decision.Candidates, at)
+	b.observer.RecordRoute(ctx, b.policy.ID(), b.Name(), req.ID, chosen, len(decision.Candidates))
 
 	b.attribution.RecordDecision(DecisionRecord{
 		RequestID:          req.ID,
@@ -99,7 +117,13 @@ func (b *BanditRouter) Pick(req core.Request, candidates []core.BackendID) core.
 	return chosen
 }
 
-func (b *BanditRouter) Observe(choice core.BackendID, resp core.Response) {
+func (b *BanditRouter) Observe(ctx context.Context, choice core.BackendID, resp core.Response) {
+	ctx, span := b.observer.Start(ctx, "bandit.reward_update",
+		attribute.String("request.id", resp.RequestID),
+		attribute.String("backend.id", string(choice)),
+	)
+	defer span.End()
+
 	at := b.clock.Now()
 	b.stats.Observe(choice, resp)
 	b.attribution.RecordResponse(ResponseRecord{RequestID: resp.RequestID, Response: resp, At: at})
@@ -114,17 +138,28 @@ func (b *BanditRouter) Observe(choice core.BackendID, resp core.Response) {
 		record.Features[0] = 1
 	}
 
+	reward := b.policy.Reward(resp)
 	b.reward.Update(LinearObservation{
 		Backend:      choice,
 		Features:     record.Features,
-		Value:        b.policy.Reward(resp),
+		Value:        reward,
 		Weight:       1,
 		At:           at,
 		DecisionTime: record.At,
 	})
+	b.observer.RecordReward(ctx, resp.RequestID, choice, reward)
 }
 
 func (b *BanditRouter) ObserveQuality(requestID string, score float64) bool {
+	return b.ObserveQualityWithContext(context.Background(), requestID, score)
+}
+
+func (b *BanditRouter) ObserveQualityWithContext(ctx context.Context, requestID string, score float64) bool {
+	ctx, span := b.observer.Start(ctx, "quality.score",
+		attribute.String("request.id", requestID),
+	)
+	defer span.End()
+
 	record, ok := b.attribution.Decision(requestID)
 	if !ok {
 		return false
@@ -143,6 +178,7 @@ func (b *BanditRouter) ObserveQuality(requestID string, score float64) bool {
 		At:           b.clock.Now(),
 		DecisionTime: record.At,
 	})
+	b.observer.RecordQuality(ctx, requestID, record.Backend, score)
 	return true
 }
 
@@ -214,7 +250,7 @@ func (b *BanditRouter) judgingPropensity(req core.Request, id core.BackendID, at
 	return rate
 }
 
-func (b *BanditRouter) applyShadow(req core.Request, chosen core.BackendID, candidates []core.BackendID, at time.Time) []core.BackendID {
+func (b *BanditRouter) applyShadow(ctx context.Context, req core.Request, chosen core.BackendID, candidates []core.BackendID, at time.Time) []core.BackendID {
 	if b.shadow == nil {
 		return nil
 	}
@@ -230,14 +266,16 @@ func (b *BanditRouter) applyShadow(req core.Request, chosen core.BackendID, cand
 			continue
 		}
 		shadows = append(shadows, id)
+		reward := b.policy.Reward(resp)
 		b.reward.Update(LinearObservation{
 			Backend:      id,
 			Features:     features,
-			Value:        b.policy.Reward(resp),
+			Value:        reward,
 			Weight:       1,
 			At:           at,
 			DecisionTime: at,
 		})
+		b.observer.RecordReward(ctx, req.ID, id, reward)
 		if quality >= 0 {
 			b.quality.Update(LinearObservation{
 				Backend:      id,
@@ -247,6 +285,7 @@ func (b *BanditRouter) applyShadow(req core.Request, chosen core.BackendID, cand
 				At:           at,
 				DecisionTime: at,
 			})
+			b.observer.RecordQuality(ctx, req.ID, id, quality)
 		}
 	}
 	return shadows

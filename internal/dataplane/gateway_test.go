@@ -7,9 +7,13 @@ import (
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/vanshamara/Augur/internal/backend"
 	"github.com/vanshamara/Augur/internal/clock"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/router"
 )
 
@@ -293,6 +297,43 @@ func TestGatewayConcurrentStressReleasesLimiter(t *testing.T) {
 			t.Fatalf("backend %s leaked %d in-flight requests", id, limiter.InFlight(id))
 		}
 	}
+}
+
+func TestGatewayEmitsTraceSpans(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	traces := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{instantBackend("a")},
+		Observer: observability.New(observability.Config{
+			Name:           "test",
+			TracerProvider: traces,
+		}),
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	names := endedSpanNames(recorder.Ended())
+	if !names["gateway.call"] {
+		t.Fatal("gateway call span was not emitted")
+	}
+	if !names["backend.call"] {
+		t.Fatal("backend call span was not emitted")
+	}
+}
+
+func endedSpanNames(spans []sdktrace.ReadOnlySpan) map[string]bool {
+	names := map[string]bool{}
+	for _, span := range spans {
+		names[span.Name()] = true
+	}
+	return names
 }
 
 func instantBackend(id core.BackendID) backend.Backend {
