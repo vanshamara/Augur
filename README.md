@@ -56,6 +56,15 @@ Run the local smoke test:
 scripts/smoke-test.sh
 ```
 
+Run a real provider smoke test:
+
+```bash
+export OPENAI_API_KEY="..."
+export AUGUR_SMOKE_MODEL="your-provider-model"
+export AUGUR_SMOKE_CHAT=1
+scripts/smoke-test.sh
+```
+
 Run the deterministic comparison report:
 
 ```bash

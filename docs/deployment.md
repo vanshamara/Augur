@@ -26,7 +26,14 @@ scripts/smoke-test.sh
 ```
 
 Set `AUGUR_SMOKE_CHAT=1` to include a real chat request. That mode needs a real
-provider key and model.
+provider key and model:
+
+```bash
+export OPENAI_API_KEY="..."
+export AUGUR_SMOKE_MODEL="your-provider-model"
+export AUGUR_SMOKE_CHAT=1
+scripts/smoke-test.sh
+```
 
 ## Docker
 
