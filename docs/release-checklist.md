@@ -8,6 +8,7 @@ Use this before making the repo public or cutting a release.
 - [ ] Run focused race tests for packages changed in the release.
 - [ ] Run `bash -n scripts/smoke-test.sh`.
 - [ ] Run `scripts/smoke-test.sh`.
+- [ ] Run `scripts/routing-smoke-test.sh`.
 - [ ] Build the Docker image with `docker build -t augur:local .`.
 - [ ] Check `git diff --check`.
 - [ ] Check `git status --short --untracked-files=all`.
@@ -29,6 +30,7 @@ Use this before making the repo public or cutting a release.
 ## Smoke
 
 - [ ] Run the local health smoke test.
+- [ ] Run the multi-backend routing smoke test.
 - [ ] Run a real chat smoke test with a small model before public launch.
 - [ ] Verify `/healthz` and `/readyz` work without gateway auth.
 - [ ] Verify `/v1/chat/completions` requires auth when `AUGUR_GATEWAY_API_KEYS` is set.

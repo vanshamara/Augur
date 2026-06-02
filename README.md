@@ -56,6 +56,12 @@ Run the local smoke test:
 scripts/smoke-test.sh
 ```
 
+Run the multi-backend routing smoke test:
+
+```bash
+scripts/routing-smoke-test.sh
+```
+
 Run a real provider smoke test:
 
 ```bash

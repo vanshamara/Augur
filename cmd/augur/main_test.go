@@ -2,17 +2,24 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	appconfig "github.com/vanshamara/Augur/internal/config"
 	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/dataplane"
+	"github.com/vanshamara/Augur/internal/httpapi"
+	"github.com/vanshamara/Augur/internal/openaiapi"
 	"github.com/vanshamara/Augur/internal/persist"
 )
 
@@ -394,6 +401,122 @@ func TestBuildLiveGatewayLoadsPersistedState(t *testing.T) {
 	}
 }
 
+func TestHTTPGatewayRoutesCostAwareToCheapestOpenAIBackend(t *testing.T) {
+	seen := newSeenModels()
+	fakeOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path got %q", r.URL.Path)
+			http.Error(w, "wrong path", http.StatusNotFound)
+			return
+		}
+
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode provider request: %v", err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		seen.add(body.Model)
+
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"choices": []map[string]any{
+				{
+					"message": map[string]string{
+						"content": "selected " + body.Model,
+					},
+				},
+			},
+			"usage": map[string]int{
+				"prompt_tokens":     4,
+				"completion_tokens": 2,
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode provider response: %v", err)
+			return
+		}
+	}))
+	defer fakeOpenAI.Close()
+
+	client, err := openaiapi.New(openaiapi.Config{
+		BaseURL: fakeOpenAI.URL + "/v1",
+		APIKey:  "test-key",
+		Client:  fakeOpenAI.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	apiServer := commandHTTPTestServer(t, appconfig.App{
+		Router: appconfig.Router{
+			Type: "cost_aware",
+		},
+		Backends: []appconfig.Backend{
+			{
+				ID:                 "expensive",
+				Model:              "model-expensive",
+				InputCostPerToken:  0.000010,
+				OutputCostPerToken: 0.000020,
+			},
+			{
+				ID:                 "cheap",
+				Model:              "model-cheap",
+				InputCostPerToken:  0.000001,
+				OutputCostPerToken: 0.000002,
+			},
+		},
+		Budgets: appconfig.Budgets{
+			MaxCompletionTokens: 32,
+		},
+	}, client)
+	gatewayServer := httptest.NewServer(apiServer)
+	defer gatewayServer.Close()
+
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"Pick the best backend."}]}`
+	req, err := http.NewRequest(http.MethodPost, gatewayServer.URL+"/v1/chat/completions", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := gatewayServer.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post gateway request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status got %d body %s", resp.StatusCode, data)
+	}
+	if got := resp.Header.Get("X-Augur-Backend"); got != "cheap" {
+		t.Fatalf("backend header got %q", got)
+	}
+	if seen.count("model-cheap") != 1 {
+		t.Fatalf("cheap model calls got %d", seen.count("model-cheap"))
+	}
+	if seen.count("model-expensive") != 0 {
+		t.Fatalf("expensive model calls got %d", seen.count("model-expensive"))
+	}
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode gateway response: %v", err)
+	}
+	if len(decoded.Choices) != 1 || decoded.Choices[0].Message.Content != "selected model-cheap" {
+		t.Fatalf("response got %+v", decoded)
+	}
+}
+
 type fakeCommandGateway struct{}
 
 func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
@@ -423,6 +546,79 @@ func commandLearnedState(id core.BackendID, updates float64) control.LearnedStat
 		Reward:  snapshot,
 		Quality: snapshot,
 	}
+}
+
+type seenModels struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func newSeenModels() *seenModels {
+	return &seenModels{counts: map[string]int{}}
+}
+
+func (s *seenModels) add(model string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counts[model]++
+}
+
+func (s *seenModels) count(model string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.counts[model]
+}
+
+func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi.Client) http.Handler {
+	t.Helper()
+
+	backends, err := buildBackends(config.Backends, client)
+	if err != nil {
+		t.Fatalf("build backends: %v", err)
+	}
+	ids := backendIDs(config.Backends)
+	routing, err := buildRouter(config, ids)
+	if err != nil {
+		t.Fatalf("build router: %v", err)
+	}
+	filters, err := buildFilters(config, ids)
+	if err != nil {
+		t.Fatalf("build filters: %v", err)
+	}
+	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
+
+	gateway, err := dataplane.New(dataplane.Config{
+		Router:          routing.Router,
+		Backends:        backends,
+		Filters:         filters,
+		Hedge:           buildHedge(config.DataPlane.Hedge),
+		SingleFlight:    singleFlight,
+		SingleFlightKey: singleFlightKey,
+	})
+	if err != nil {
+		t.Fatalf("build gateway: %v", err)
+	}
+	servingGateway, err := buildLiveGateway(config, gateway, routing.Bandit, client)
+	if err != nil {
+		t.Fatalf("build live gateway: %v", err)
+	}
+	t.Cleanup(func() {
+		closeGateway(servingGateway)
+	})
+
+	apiServer, err := httpapi.New(httpapi.Config{
+		Gateway:       servingGateway,
+		Defaults:      requestDefaults(config.Budgets),
+		TenantHeader:  config.Tenants.Header,
+		DefaultTenant: config.Tenants.DefaultTenant,
+		Ready: func(ctx context.Context) bool {
+			return len(backends) > 0
+		},
+	})
+	if err != nil {
+		t.Fatalf("new http api: %v", err)
+	}
+	return apiServer
 }
 
 func TestBuildHTTPServerUsesConfig(t *testing.T) {
