@@ -19,6 +19,36 @@ Run tests before shipping a build:
 go test ./...
 ```
 
+Run the local smoke test:
+
+```bash
+scripts/smoke-test.sh
+```
+
+Set `AUGUR_SMOKE_CHAT=1` to include a real chat request. That mode needs a real
+provider key and model.
+
+## Docker
+
+Build the container image:
+
+```bash
+docker build -t augur:local .
+```
+
+Run it with environment config:
+
+```bash
+docker run --rm \
+  -p 8080:8080 \
+  -e OPENAI_API_KEY \
+  -e AUGUR_ADDR=0.0.0.0:8080 \
+  -e AUGUR_BACKENDS=primary=your-model-id \
+  augur:local
+```
+
+Use your own config outside the repo for real deployments.
+
 ## Config
 
 Use JSON or YAML config with `AUGUR_CONFIG`:
@@ -290,4 +320,4 @@ time to finish during shutdown.
 These are still future work:
 
 - TLS config
-- container and Kubernetes manifests
+- Kubernetes manifests

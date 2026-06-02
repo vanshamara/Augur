@@ -34,9 +34,9 @@ It has the core pieces in place:
 - LiteLLM-style and Envoy-style local router shims
 
 The core router, policy, learning, replay, config loader, adapter, local HTTP
-endpoint, gateway auth, and learned state persistence are built. It is not yet
-packaged as a production gateway, so it does not include real deployment
-recipes or tuned production defaults.
+endpoint, gateway auth, learned state persistence, tenant limits, and release
+docs are built. It is not yet production hardened, so defaults still need real
+traffic tuning before broad deployment.
 
 ## Requirements
 
@@ -48,6 +48,12 @@ Run the full test suite:
 
 ```bash
 go test ./...
+```
+
+Run the local smoke test:
+
+```bash
+scripts/smoke-test.sh
 ```
 
 Run the deterministic comparison report:
@@ -237,8 +243,10 @@ internal/router             baseline and proxy-style routers
 Public docs:
 
 - [Architecture](docs/architecture.md)
+- [Config reference](docs/config-reference.md)
 - [Deployment notes](docs/deployment.md)
 - [Baseline report](docs/baseline-report.md)
+- [Release checklist](docs/release-checklist.md)
 
 The baseline report compares Augur against the LiteLLM-style and Envoy-style
 shims.
