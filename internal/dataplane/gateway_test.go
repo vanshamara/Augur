@@ -1,0 +1,324 @@
+package dataplane
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/vanshamara/Augur/internal/backend"
+	"github.com/vanshamara/Augur/internal/clock"
+	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/router"
+)
+
+type fakeBackend struct {
+	id       core.BackendID
+	delay    time.Duration
+	response core.Response
+	err      error
+	calls    atomic.Int64
+	cancels  atomic.Int64
+}
+
+func (f *fakeBackend) ID() core.BackendID {
+	return f.id
+}
+
+func (f *fakeBackend) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	f.calls.Add(1)
+	if f.delay > 0 {
+		timer := time.NewTimer(f.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			f.cancels.Add(1)
+			return core.Response{}, ctx.Err()
+		}
+	}
+
+	resp := f.response
+	if resp.Backend == "" {
+		resp.Backend = f.id
+	}
+	return resp, f.err
+}
+
+type recordingFilter struct {
+	filterBase
+	name string
+	log  *[]string
+}
+
+func (r recordingFilter) Name() string {
+	return r.name
+}
+
+func (r recordingFilter) Apply(req core.Request, candidates []core.BackendID) []core.BackendID {
+	*r.log = append(*r.log, r.name)
+	return candidates
+}
+
+func TestGatewayAppliesFiltersInOrder(t *testing.T) {
+	var order []string
+	backends := []backend.Backend{instantBackend("a"), instantBackend("b")}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: backends,
+		Filters: []Filter{
+			recordingFilter{name: "health", log: &order},
+			recordingFilter{name: "circuit", log: &order},
+			recordingFilter{name: "concurrency", log: &order},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	want := []string{"health", "circuit", "concurrency"}
+	for i, value := range want {
+		if order[i] != value {
+			t.Fatalf("filter %d got %s want %s", i, order[i], value)
+		}
+	}
+}
+
+func TestHealthFilterRemovesUnhealthyBackend(t *testing.T) {
+	backends := []backend.Backend{instantBackend("a"), instantBackend("b")}
+	health := NewHealthFilter([]core.BackendID{"a", "b"})
+	health.Set("a", false)
+
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: backends,
+		Filters:  []Filter{health},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "b" {
+		t.Fatalf("expected healthy backend b, got %s", resp.Backend)
+	}
+}
+
+func TestAdaptiveLimiterShedsAndAdjustsLimit(t *testing.T) {
+	limiter := NewAdaptiveLimiter([]core.BackendID{"a"}, LimitConfig{
+		InitialLimit:    1,
+		MinLimit:        1,
+		MaxLimit:        4,
+		TargetLatencyMs: 100,
+	})
+
+	release, ok := limiter.Acquire("a")
+	if !ok {
+		t.Fatal("first request should be admitted")
+	}
+	if _, ok := limiter.Acquire("a"); ok {
+		t.Fatal("second request should be shed at limit one")
+	}
+	release()
+
+	limiter.Observe("a", core.Response{Backend: "a", Outcome: core.Outcome{LatencyMs: 50}}, nil)
+	if limiter.Limit("a") != 2 {
+		t.Fatalf("success should raise the limit to 2, got %d", limiter.Limit("a"))
+	}
+
+	limiter.Observe("a", core.Response{Backend: "a", Outcome: core.Outcome{LatencyMs: 500}}, nil)
+	if limiter.Limit("a") != 1 {
+		t.Fatalf("slow response should lower the limit to 1, got %d", limiter.Limit("a"))
+	}
+}
+
+func TestCircuitBreakerHalfOpenProbe(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewVirtual(start)
+	circuit := NewCircuitBreaker([]core.BackendID{"a"}, CircuitConfig{
+		FailureThreshold: 2,
+		RecoveryAfter:    time.Second,
+		HalfOpenMax:      1,
+		Clock:            clk,
+	})
+
+	failed := core.Response{Backend: "a", Outcome: core.Outcome{Errored: true}}
+	circuit.Observe("a", failed, nil)
+	if circuit.Mode("a") != "closed" {
+		t.Fatalf("one failure should not open the circuit")
+	}
+	circuit.Observe("a", failed, nil)
+	if circuit.Mode("a") != "open" {
+		t.Fatalf("two failures should open the circuit")
+	}
+	if got := circuit.Apply(core.Request{ID: "req"}, []core.BackendID{"a"}); len(got) != 0 {
+		t.Fatalf("open circuit should remove candidates, got %v", got)
+	}
+
+	clk.Advance(time.Second)
+	if got := circuit.Apply(core.Request{ID: "req"}, []core.BackendID{"a"}); len(got) != 1 {
+		t.Fatalf("after recovery delay one probe should be eligible, got %v", got)
+	}
+	release, ok := circuit.Acquire("a")
+	if !ok {
+		t.Fatal("half-open probe should be admitted")
+	}
+	if _, ok := circuit.Acquire("a"); ok {
+		t.Fatal("second half-open probe should be blocked")
+	}
+	release()
+
+	circuit.Observe("a", core.Response{Backend: "a"}, nil)
+	if circuit.Mode("a") != "closed" {
+		t.Fatalf("successful probe should close the circuit, got %s", circuit.Mode("a"))
+	}
+}
+
+func TestGatewayHedgesAndCancelsSlowPrimary(t *testing.T) {
+	slow := &fakeBackend{id: "slow", delay: 80 * time.Millisecond}
+	fast := &fakeBackend{id: "fast", delay: 5 * time.Millisecond}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("slow"),
+		Backends: []backend.Backend{slow, fast},
+		Clock:    clock.NewReal(),
+		Hedge: HedgeConfig{
+			Enabled: true,
+			Delay:   10 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "fast" {
+		t.Fatalf("hedge should return the fast backend, got %s", resp.Backend)
+	}
+	if slow.calls.Load() != 1 || fast.calls.Load() != 1 {
+		t.Fatalf("expected one primary and one hedge call, got slow=%d fast=%d", slow.calls.Load(), fast.calls.Load())
+	}
+	waitFor(t, func() bool {
+		return slow.cancels.Load() == 1
+	})
+}
+
+func TestSingleFlightDeduplicatesInFlightRequests(t *testing.T) {
+	model := &fakeBackend{id: "a", delay: 50 * time.Millisecond}
+	gateway, err := New(Config{
+		Router:          router.NewStatic("a"),
+		Backends:        []backend.Backend{model},
+		SingleFlight:    NewSingleFlight(),
+		SingleFlightKey: func(core.Request) string { return "same" },
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		_, callErr := gateway.Call(context.Background(), core.Request{ID: "first"})
+		firstErr <- callErr
+	}()
+
+	waitFor(t, func() bool {
+		return model.calls.Load() == 1
+	})
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "second"})
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if model.calls.Load() != 1 {
+		t.Fatalf("deduped calls should hit backend once, got %d", model.calls.Load())
+	}
+}
+
+func TestGatewayConcurrentStressReleasesLimiter(t *testing.T) {
+	ids := []core.BackendID{"a", "b", "c"}
+	backends := []backend.Backend{
+		&fakeBackend{id: "a", delay: time.Millisecond},
+		&fakeBackend{id: "b", delay: time.Millisecond},
+		&fakeBackend{id: "c", delay: time.Millisecond},
+	}
+	limiter := NewAdaptiveLimiter(ids, LimitConfig{
+		InitialLimit:    100,
+		MinLimit:        1,
+		MaxLimit:        100,
+		TargetLatencyMs: 100,
+	})
+	gateway, err := New(Config{
+		Router:   router.NewP2C(ids, 0.2, 7),
+		Backends: backends,
+		Filters:  []Filter{limiter},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	var wait sync.WaitGroup
+	errs := make(chan error, 120)
+	for i := 0; i < 120; i++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, callErr := gateway.Call(context.Background(), core.Request{ID: "req-" + itoa(index)})
+			if callErr != nil {
+				errs <- callErr
+			}
+		}(i)
+	}
+	wait.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("stress call: %v", err)
+	}
+	for _, id := range ids {
+		if limiter.InFlight(id) != 0 {
+			t.Fatalf("backend %s leaked %d in-flight requests", id, limiter.InFlight(id))
+		}
+	}
+}
+
+func instantBackend(id core.BackendID) backend.Backend {
+	return &fakeBackend{id: id}
+}
+
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if done() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition was not met")
+}
+
+func itoa(value int) string {
+	if value == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for value > 0 {
+		digits = append([]byte{byte('0' + value%10)}, digits...)
+		value /= 10
+	}
+	return string(digits)
+}

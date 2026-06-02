@@ -21,9 +21,7 @@ func (f *atomicFloat) load() float64 {
 	return math.Float64frombits(f.bits.Load())
 }
 
-// update folds a new sample into the moving average, or sets it directly the first
-// time, when the stored value is still NaN. It retries until the swap wins, so it is
-// safe under concurrent calls.
+// update folds a new sample into the moving average.
 func (f *atomicFloat) update(sample, alpha float64) {
 	for {
 		oldBits := f.bits.Load()
@@ -36,6 +34,10 @@ func (f *atomicFloat) update(sample, alpha float64) {
 			return
 		}
 	}
+}
+
+func (f *atomicFloat) store(sample float64) {
+	f.bits.Store(math.Float64bits(sample))
 }
 
 // EWMA sends each request to the backend with the lowest recent latency, tracked as
