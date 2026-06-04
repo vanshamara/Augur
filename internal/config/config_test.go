@@ -28,6 +28,19 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 				"max_completion_tokens": 128
 			}
 		],
+		"routes": [
+			{
+				"name": "reasoning-premium",
+				"match": {
+					"task_types": ["reasoning"],
+					"tenants": ["premium"],
+					"user_tiers": ["premium"]
+				},
+				"candidates": [
+					{"backend": "fast"}
+				]
+			}
+		],
 		"router": {"type": "p2c", "seed": 9, "alpha": 0.3, "p2c_window": 32},
 		"data_plane": {
 			"filters": ["health", "circuit", "concurrency"],
@@ -111,6 +124,12 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
 		t.Fatalf("backend got %+v", config.Backends[0])
+	}
+	if len(config.Routes) != 1 || config.Routes[0].Name != "reasoning-premium" {
+		t.Fatalf("routes got %+v", config.Routes)
+	}
+	if config.Routes[0].Match.TaskTypes[0] != "reasoning" || config.Routes[0].Candidates[0].Backend != "fast" {
+		t.Fatalf("route details got %+v", config.Routes[0])
 	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
@@ -286,6 +305,10 @@ backends:
     input_cost_per_token: 0.001
     output_cost_per_token: 0.002
     max_completion_tokens: 128
+routes:
+  - name: "default"
+    candidates:
+      - backend: "fast"
 router:
   type: "p2c"
   seed: 9
@@ -384,6 +407,9 @@ budgets:
 	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
 		t.Fatalf("backend got %+v", config.Backends[0])
 	}
+	if len(config.Routes) != 1 || config.Routes[0].Name != "default" {
+		t.Fatalf("routes got %+v", config.Routes)
+	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
 	}
@@ -429,6 +455,66 @@ func TestParseRejectsBadSingleFlightKey(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"single_flight":{"enabled":true,"key":"bad"}}}`))
 	if err == nil {
 		t.Fatal("bad single flight key should fail")
+	}
+}
+
+func TestParseRejectsDuplicateRouteNames(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [
+			{"name": "same", "candidates": [{"backend": "a"}]},
+			{"name": "same", "candidates": [{"backend": "a"}]}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("duplicate route names should fail")
+	}
+}
+
+func TestParseRejectsRouteWithoutCandidates(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{"name": "empty"}]
+	}`))
+	if err == nil {
+		t.Fatal("route without candidates should fail")
+	}
+}
+
+func TestParseRejectsRouteWithUnknownBackend(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{"name": "bad", "candidates": [{"backend": "missing"}]}]
+	}`))
+	if err == nil {
+		t.Fatal("route with unknown backend should fail")
+	}
+}
+
+func TestParseRejectsRouteWithBadTaskType(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{
+			"name": "bad-task",
+			"match": {"task_types": ["image"]},
+			"candidates": [{"backend": "a"}]
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("route with bad task type should fail")
+	}
+}
+
+func TestParseRejectsMultipleDefaultRoutes(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [
+			{"name": "default-a", "candidates": [{"backend": "a"}]},
+			{"name": "default-b", "candidates": [{"backend": "a"}]}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("multiple default routes should fail")
 	}
 }
 

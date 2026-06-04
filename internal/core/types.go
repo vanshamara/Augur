@@ -48,6 +48,7 @@ type Outcome struct {
 type Response struct {
 	RequestID  string
 	TenantID   string
+	RouteName  string
 	Backend    BackendID
 	OutputText string
 	Outcome
@@ -56,6 +57,7 @@ type Response struct {
 type StreamChunk struct {
 	RequestID string
 	TenantID  string
+	RouteName string
 	Backend   BackendID
 	Delta     string
 	Done      bool

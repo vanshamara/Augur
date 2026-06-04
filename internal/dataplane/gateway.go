@@ -36,6 +36,7 @@ type HedgeConfig struct {
 type Config struct {
 	Router          router.Router
 	Backends        []backend.Backend
+	Routes          []RouteRule
 	Filters         []Filter
 	Clock           clock.Clock
 	Hedge           HedgeConfig
@@ -48,6 +49,7 @@ type Gateway struct {
 	router          router.Router
 	ids             []core.BackendID
 	backends        map[core.BackendID]backend.Backend
+	routes          *RouteSelector
 	filters         []Filter
 	clock           clock.Clock
 	hedge           HedgeConfig
@@ -93,6 +95,7 @@ func New(config Config) (*Gateway, error) {
 		router:          config.Router,
 		ids:             ids,
 		backends:        backends,
+		routes:          NewRouteSelector(config.Routes),
 		filters:         append([]Filter(nil), config.Filters...),
 		clock:           config.Clock,
 		hedge:           config.Hedge,
@@ -132,18 +135,18 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	defer span.End()
 
 	candidates := g.candidates(req)
-	if len(candidates) == 0 {
+	if len(candidates.IDs) == 0 {
 		return nil, ErrNoCandidates
 	}
 
-	remaining := copyCandidates(candidates)
+	remaining := copyCandidates(candidates.IDs)
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
 			return nil, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
-		stream, err := g.streamBackend(ctx, req, choice)
+		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName)
 		if !errors.Is(err, ErrLoadShed) {
 			return stream, err
 		}
@@ -154,35 +157,41 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
 	candidates := g.candidates(req)
-	if len(candidates) == 0 {
+	if len(candidates.IDs) == 0 {
 		return core.Response{}, ErrNoCandidates
 	}
-	if !g.shouldHedge(req, candidates) {
+	if !g.shouldHedge(req, candidates.IDs) {
 		return g.callRouted(ctx, req, candidates)
 	}
 	return g.callHedged(ctx, req, candidates)
 }
 
-func (g *Gateway) candidates(req core.Request) []core.BackendID {
-	candidates := copyCandidates(g.ids)
+type candidateSet struct {
+	RouteName string
+	IDs       []core.BackendID
+}
+
+func (g *Gateway) candidates(req core.Request) candidateSet {
+	decision := g.routes.Select(req, g.ids)
+	candidates := copyCandidates(decision.Candidates)
 	for _, filter := range g.filters {
 		candidates = filter.Apply(req, candidates)
 		if len(candidates) == 0 {
-			return nil
+			return candidateSet{RouteName: decision.Name}
 		}
 	}
-	return candidates
+	return candidateSet{RouteName: decision.Name, IDs: candidates}
 }
 
-func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates []core.BackendID) (core.Response, error) {
-	remaining := copyCandidates(candidates)
+func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
+	remaining := copyCandidates(candidates.IDs)
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
 			return core.Response{}, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, choice, len(remaining))
-		resp, err := g.callBackend(ctx, req, choice)
+		resp, err := g.callBackend(ctx, req, choice, candidates.RouteName)
 		if !errors.Is(err, ErrLoadShed) {
 			return resp, err
 		}
@@ -191,23 +200,23 @@ func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates [
 	return core.Response{}, ErrLoadShed
 }
 
-func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates []core.BackendID) (core.Response, error) {
+func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	primary := g.router.Pick(ctx, req, candidates)
+	primary := g.router.Pick(ctx, req, candidates.IDs)
 	if primary == "" {
 		return core.Response{}, ErrNoCandidates
 	}
-	g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, primary, len(candidates))
-	results := make(chan callResult, len(candidates))
+	g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, primary, len(candidates.IDs))
+	results := make(chan callResult, len(candidates.IDs))
 	started := 1
 	completed := 0
 	extraStarted := 0
 	called := map[core.BackendID]bool{primary: true}
 	var first callResult
 
-	g.startCall(runCtx, req, primary, results, nil)
+	g.startCall(runCtx, req, primary, candidates.RouteName, results, nil)
 	timer := g.clock.After(g.hedgeDelay(req, primary))
 
 	for completed < started {
@@ -221,20 +230,20 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates [
 				cancel()
 				return result.resp, nil
 			}
-			if g.canStartExtra(extraStarted, candidates) {
+			if g.canStartExtra(extraStarted, candidates.IDs) {
 				if g.startHedge(runCtx, req, called, candidates, results) {
 					started++
 					extraStarted++
 				}
 			}
 		case <-timer:
-			if g.canStartExtra(extraStarted, candidates) {
+			if g.canStartExtra(extraStarted, candidates.IDs) {
 				if g.startHedge(runCtx, req, called, candidates, results) {
 					started++
 					extraStarted++
 				}
 			}
-			if g.canStartExtra(extraStarted, candidates) {
+			if g.canStartExtra(extraStarted, candidates.IDs) {
 				timer = g.clock.After(g.hedgeDelay(req, primary))
 			} else {
 				timer = nil
@@ -310,18 +319,18 @@ func (r callResult) ok() bool {
 	return r.err == nil && !r.resp.Errored
 }
 
-func (g *Gateway) startCall(ctx context.Context, req core.Request, id core.BackendID, results chan<- callResult, done Release) {
+func (g *Gateway) startCall(ctx context.Context, req core.Request, id core.BackendID, routeName string, results chan<- callResult, done Release) {
 	go func() {
 		if done != nil {
 			defer done()
 		}
-		resp, err := g.callBackend(ctx, req, id)
+		resp, err := g.callBackend(ctx, req, id, routeName)
 		results <- callResult{resp: resp, err: err}
 	}()
 }
 
-func (g *Gateway) startHedge(ctx context.Context, req core.Request, called map[core.BackendID]bool, candidates []core.BackendID, results chan<- callResult) bool {
-	backup, ok := nextBackup(called, candidates)
+func (g *Gateway) startHedge(ctx context.Context, req core.Request, called map[core.BackendID]bool, candidates candidateSet, results chan<- callResult) bool {
+	backup, ok := nextBackup(called, candidates.IDs)
 	if !ok {
 		return false
 	}
@@ -330,8 +339,8 @@ func (g *Gateway) startHedge(ctx context.Context, req core.Request, called map[c
 		return false
 	}
 	called[backup] = true
-	g.observer.RecordRoute(ctx, "data-plane-hedge", g.router.Name(), req.ID, backup, len(candidates))
-	g.startCall(ctx, req, backup, results, release)
+	g.observer.RecordRoute(ctx, "data-plane-hedge", g.router.Name(), req.ID, backup, len(candidates.IDs))
+	g.startCall(ctx, req, backup, candidates.RouteName, results, release)
 	return true
 }
 
@@ -352,7 +361,7 @@ func (g *Gateway) acquireHedge() (Release, bool) {
 	}
 }
 
-func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.BackendID) (core.Response, error) {
+func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string) (core.Response, error) {
 	ctx, span := g.observer.Start(ctx, "backend.call",
 		attribute.String("request.id", req.ID),
 		attribute.String("backend.id", string(id)),
@@ -361,7 +370,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 
 	release, ok := g.acquire(req, id)
 	if !ok {
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		return resp, ErrLoadShed
 	}
@@ -369,7 +378,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 
 	b := g.backends[id]
 	if b == nil {
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		return resp, ErrMissing
 	}
@@ -380,6 +389,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	}
 	if resp.TenantID == "" {
 		resp.TenantID = req.TenantID
+	}
+	if resp.RouteName == "" {
+		resp.RouteName = routeName
 	}
 	if resp.Backend == "" {
 		resp.Backend = id
@@ -399,10 +411,10 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	return resp, err
 }
 
-func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID) (core.Stream, error) {
+func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string) (core.Stream, error) {
 	release, ok := g.acquire(req, id)
 	if !ok {
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		return nil, ErrLoadShed
 	}
@@ -410,14 +422,14 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	b := g.backends[id]
 	if b == nil {
 		release()
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		return nil, ErrMissing
 	}
 	streamBackend, ok := b.(backend.StreamBackend)
 	if !ok {
 		release()
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		g.observer.RecordResponse(ctx, resp, ErrStreaming)
 		return nil, ErrStreaming
 	}
@@ -425,17 +437,18 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	stream, err := streamBackend.Stream(ctx, req)
 	if err != nil {
 		release()
-		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, Backend: id, Outcome: core.Outcome{Errored: true}}
+		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id, Outcome: core.Outcome{Errored: true}}
 		g.observeStreamResponse(ctx, id, resp, err)
 		return nil, err
 	}
 	return &gatewayStream{
-		ctx:     ctx,
-		gateway: g,
-		req:     req,
-		id:      id,
-		stream:  stream,
-		release: release,
+		ctx:       ctx,
+		gateway:   g,
+		req:       req,
+		id:        id,
+		routeName: routeName,
+		stream:    stream,
+		release:   release,
 	}, nil
 }
 
@@ -452,14 +465,15 @@ func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, 
 }
 
 type gatewayStream struct {
-	ctx      context.Context
-	gateway  *Gateway
-	req      core.Request
-	id       core.BackendID
-	stream   core.Stream
-	release  Release
-	observed bool
-	closed   bool
+	ctx       context.Context
+	gateway   *Gateway
+	req       core.Request
+	id        core.BackendID
+	routeName string
+	stream    core.Stream
+	release   Release
+	observed  bool
+	closed    bool
 }
 
 func (s *gatewayStream) Recv() (core.StreamChunk, error) {
@@ -470,12 +484,15 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	if chunk.TenantID == "" {
 		chunk.TenantID = s.req.TenantID
 	}
+	if chunk.RouteName == "" {
+		chunk.RouteName = s.routeName
+	}
 	if chunk.Backend == "" {
 		chunk.Backend = s.id
 	}
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
-			resp := core.Response{RequestID: s.req.ID, TenantID: s.req.TenantID, Backend: s.id, Outcome: core.Outcome{Errored: true}}
+			resp := core.Response{RequestID: s.req.ID, TenantID: s.req.TenantID, RouteName: s.routeName, Backend: s.id, Outcome: core.Outcome{Errored: true}}
 			s.observe(resp, err)
 		}
 		s.closeRelease()
@@ -485,6 +502,7 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 		resp := core.Response{
 			RequestID:  s.req.ID,
 			TenantID:   s.req.TenantID,
+			RouteName:  s.routeName,
 			Backend:    s.id,
 			OutputText: "",
 			Outcome:    chunk.Outcome,

@@ -139,6 +139,30 @@ func TestChatCompletionsRoutesThroughGateway(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsWritesRouteHeader(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:  "req-1",
+			RouteName:  "chat-route",
+			Backend:    "fast",
+			OutputText: "answer",
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Augur-Route"); got != "chat-route" {
+		t.Fatalf("route header got %q", got)
+	}
+}
+
 func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
 	temperature := 0.4
 	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}

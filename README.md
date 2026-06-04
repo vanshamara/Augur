@@ -21,6 +21,7 @@ Built or mostly built:
 - OpenAI-style `/v1/chat/completions` HTTP API
 - JSON and YAML config
 - static, round-robin, least-loaded, EWMA, cost-aware, P2C, and bandit routers
+- route rules with task, tenant, tier, and candidate backend matching
 - health, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - OpenAI-compatible backend adapter
 - streaming responses
@@ -48,7 +49,6 @@ Not included:
 
 - managed hosting
 - built-in TLS
-- first-class route rule config
 - deterministic canary percentage routing
 - route-specific fallback chains
 - active health checking

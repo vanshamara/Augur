@@ -17,12 +17,14 @@ client
 
 1. `cmd/augur` loads config and builds the gateway.
 2. `internal/httpapi` parses `/v1/chat/completions` and request-aware hints.
-3. `internal/dataplane` applies filters such as health, circuit breaking,
+3. `internal/dataplane` matches route rules and creates the route candidate set.
+4. `internal/dataplane` applies filters such as health, circuit breaking,
    concurrency, tenant limits, hedging, and single flight.
-4. A router chooses one backend from the remaining candidates.
-5. `internal/backend/openai` sends the request to the provider.
-6. Augur returns the response and sets `X-Augur-Backend`.
-7. If live learning is enabled, `internal/live` updates reward and quality state.
+5. A router chooses one backend from the remaining candidates.
+6. `internal/backend/openai` sends the request to the provider.
+7. Augur returns the response and sets `X-Augur-Backend` and, when a route
+   matched, `X-Augur-Route`.
+8. If live learning is enabled, `internal/live` updates reward and quality state.
 
 Route-specific fallback chains, deterministic canary percentage routing, and
 backend capability filtering are planned V1 work. Current fallback behavior is

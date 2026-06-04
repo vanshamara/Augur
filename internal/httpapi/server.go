@@ -214,6 +214,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("X-Augur-Backend", string(resp.Backend))
+	if resp.RouteName != "" {
+		w.Header().Set("X-Augur-Route", resp.RouteName)
+	}
 	writeJSON(w, http.StatusOK, body.response(req, resp, s.newID(), s.now()))
 }
 

@@ -134,6 +134,7 @@ func (o *Observer) RecordQuality(ctx context.Context, requestID string, backend 
 func responseAttrs(resp core.Response) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("request.id", resp.RequestID),
+		attribute.String("route.name", resp.RouteName),
 		attribute.String("backend.id", string(resp.Backend)),
 		attribute.Bool("response.errored", resp.Errored),
 	}

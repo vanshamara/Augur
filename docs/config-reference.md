@@ -10,6 +10,7 @@ Unknown fields are rejected. Keep real config files outside the repo.
 server: {}
 openai: {}
 backends: []
+routes: []
 pricing: {}
 router: {}
 data_plane: {}
@@ -74,6 +75,40 @@ pricing:
 ```
 
 Augur uses this table when a backend does not set explicit prices.
+
+## Routes
+
+```yaml
+routes:
+  - name: "reasoning"
+    match:
+      task_types: ["reasoning"]
+      tenants: ["premium"]
+      user_tiers: ["premium"]
+    candidates:
+      - backend: "balanced"
+      - backend: "strong"
+  - name: "default"
+    candidates:
+      - backend: "fast"
+      - backend: "balanced"
+      - backend: "strong"
+```
+
+Routes are checked in order. The first matching route supplies the candidate
+backend set for the request. Empty match fields act as wildcards, so one route
+with no `match` block can be used as the default route.
+
+- `name`: route name. Must be unique.
+- `match.task_types`: optional list of `chat`, `reasoning`, `coding`, or
+  `embedding`.
+- `match.tenants`: optional list of tenant IDs.
+- `match.user_tiers`: optional list of user tiers.
+- `candidates`: backend IDs that this route may use.
+
+If `routes` is empty, Augur keeps the older behavior and all configured backends
+are candidates. If routes are configured and none match a request, Augur returns
+no candidates.
 
 ## Router
 

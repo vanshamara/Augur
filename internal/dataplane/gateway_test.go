@@ -149,6 +149,98 @@ func TestHealthFilterRemovesUnhealthyBackend(t *testing.T) {
 	}
 }
 
+func TestGatewayUsesMatchedRouteCandidates(t *testing.T) {
+	chat := instantBackend("chat")
+	reasoning := instantBackend("reasoning")
+	gateway, err := New(Config{
+		Router:   router.NewStatic("reasoning"),
+		Backends: []backend.Backend{chat, reasoning},
+		Routes: []RouteRule{
+			{
+				Name:       "chat-route",
+				Match:      RouteMatch{TaskTypes: []core.RequestType{core.Chat}},
+				Candidates: []core.BackendID{"chat"},
+			},
+			{
+				Name:       "reasoning-route",
+				Match:      RouteMatch{TaskTypes: []core.RequestType{core.Reasoning}},
+				Candidates: []core.BackendID{"reasoning"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			Type: core.Chat,
+		},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "chat" || resp.RouteName != "chat-route" {
+		t.Fatalf("route response got %+v", resp)
+	}
+}
+
+func TestGatewayReturnsNoCandidatesWhenNoRouteMatches(t *testing.T) {
+	gateway, err := New(Config{
+		Router:   router.NewRoundRobin(),
+		Backends: []backend.Backend{instantBackend("chat")},
+		Routes: []RouteRule{
+			{
+				Name:       "reasoning-route",
+				Match:      RouteMatch{TaskTypes: []core.RequestType{core.Reasoning}},
+				Candidates: []core.BackendID{"chat"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			Type: core.Chat,
+		},
+	})
+	if !errors.Is(err, ErrNoCandidates) {
+		t.Fatalf("no route error got %v", err)
+	}
+}
+
+func TestRouteSelectorMatchesTenantAndTier(t *testing.T) {
+	selector := NewRouteSelector([]RouteRule{
+		{
+			Name: "premium",
+			Match: RouteMatch{
+				Tenants:   []string{"tenant-a"},
+				UserTiers: []string{"Premium"},
+			},
+			Candidates: []core.BackendID{"strong"},
+		},
+		{
+			Name:       "default",
+			Candidates: []core.BackendID{"fast"},
+		},
+	})
+
+	decision := selector.Select(core.Request{
+		TenantID: "tenant-a",
+		Features: core.Features{
+			UserTier: "premium",
+		},
+	}, []core.BackendID{"fast", "strong"})
+
+	if decision.Name != "premium" || len(decision.Candidates) != 1 || decision.Candidates[0] != "strong" {
+		t.Fatalf("decision got %+v", decision)
+	}
+}
+
 func TestAdaptiveLimiterShedsAndAdjustsLimit(t *testing.T) {
 	limiter := NewAdaptiveLimiter([]core.BackendID{"a"}, LimitConfig{
 		InitialLimit:    1,

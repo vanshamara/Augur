@@ -68,6 +68,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 	gateway, err := dataplane.New(dataplane.Config{
 		Router:          routing.Router,
 		Backends:        backends,
+		Routes:          buildRouteRules(config.Routes),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
@@ -304,6 +305,26 @@ func buildFilters(config appconfig.App, ids []core.BackendID) ([]dataplane.Filte
 		}
 	}
 	return filters, nil
+}
+
+func buildRouteRules(routes []appconfig.Route) []dataplane.RouteRule {
+	out := make([]dataplane.RouteRule, 0, len(routes))
+	for _, route := range routes {
+		candidates := make([]core.BackendID, 0, len(route.Candidates))
+		for _, candidate := range route.Candidates {
+			candidates = append(candidates, candidate.Backend)
+		}
+		out = append(out, dataplane.RouteRule{
+			Name: route.Name,
+			Match: dataplane.RouteMatch{
+				TaskTypes: route.Match.TaskTypes,
+				Tenants:   route.Match.Tenants,
+				UserTiers: route.Match.UserTiers,
+			},
+			Candidates: candidates,
+		})
+	}
+	return out
 }
 
 func buildHedge(config appconfig.Hedge) dataplane.HedgeConfig {

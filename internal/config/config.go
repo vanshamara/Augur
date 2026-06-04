@@ -28,6 +28,7 @@ type App struct {
 	Server    Server               `json:"server"`
 	OpenAI    OpenAI               `json:"openai"`
 	Backends  []Backend            `json:"backends"`
+	Routes    []Route              `json:"routes"`
 	Router    Router               `json:"router"`
 	DataPlane DataPlane            `json:"data_plane"`
 	Learning  Learning             `json:"learning"`
@@ -58,6 +59,22 @@ type Backend struct {
 	InputCostPerToken   float64        `json:"input_cost_per_token"`
 	OutputCostPerToken  float64        `json:"output_cost_per_token"`
 	MaxCompletionTokens int            `json:"max_completion_tokens"`
+}
+
+type Route struct {
+	Name       string           `json:"name"`
+	Match      RouteMatch       `json:"match"`
+	Candidates []RouteCandidate `json:"candidates"`
+}
+
+type RouteMatch struct {
+	TaskTypes []core.RequestType `json:"task_types"`
+	Tenants   []string           `json:"tenants"`
+	UserTiers []string           `json:"user_tiers"`
+}
+
+type RouteCandidate struct {
+	Backend core.BackendID `json:"backend"`
 }
 
 type Pricing struct {
@@ -302,6 +319,9 @@ func (a App) withDefaults() (App, error) {
 		}
 	}
 	a.applyPricingTable()
+	if err := validateRoutes(a.Routes, a.Backends); err != nil {
+		return App{}, err
+	}
 	if err := validateRouter(a.Router.Type); err != nil {
 		return App{}, err
 	}
@@ -398,6 +418,77 @@ func validateTenant(name string, tenant Tenant) error {
 		return fmt.Errorf("tenant %q policy max_completion_tokens cannot be negative", name)
 	}
 	return nil
+}
+
+func validateRoutes(routes []Route, backends []Backend) error {
+	if len(routes) == 0 {
+		return nil
+	}
+
+	backendIDs := map[core.BackendID]bool{}
+	for _, backend := range backends {
+		backendIDs[backend.ID] = true
+	}
+
+	names := map[string]bool{}
+	hasDefault := false
+	for i, route := range routes {
+		name := strings.TrimSpace(route.Name)
+		if name == "" {
+			return fmt.Errorf("route %d name is required", i)
+		}
+		if names[name] {
+			return fmt.Errorf("duplicate route name %q", name)
+		}
+		names[name] = true
+
+		if len(route.Candidates) == 0 {
+			return fmt.Errorf("route %q must include at least one candidate", name)
+		}
+		for _, candidate := range route.Candidates {
+			if candidate.Backend == "" {
+				return fmt.Errorf("route %q candidate backend is required", name)
+			}
+			if !backendIDs[candidate.Backend] {
+				return fmt.Errorf("route %q references unknown backend %q", name, candidate.Backend)
+			}
+		}
+		if err := validateRouteMatch(name, route.Match); err != nil {
+			return err
+		}
+		if emptyRouteMatch(route.Match) {
+			if hasDefault {
+				return errors.New("only one default route can have an empty match")
+			}
+			hasDefault = true
+		}
+	}
+	return nil
+}
+
+func validateRouteMatch(name string, match RouteMatch) error {
+	for _, taskType := range match.TaskTypes {
+		switch taskType {
+		case core.Chat, core.Reasoning, core.Coding, core.Embedding:
+		default:
+			return fmt.Errorf("route %q has unsupported task type %q", name, taskType)
+		}
+	}
+	for _, tenant := range match.Tenants {
+		if strings.TrimSpace(tenant) == "" {
+			return fmt.Errorf("route %q tenant match cannot be empty", name)
+		}
+	}
+	for _, tier := range match.UserTiers {
+		if strings.TrimSpace(tier) == "" {
+			return fmt.Errorf("route %q user tier match cannot be empty", name)
+		}
+	}
+	return nil
+}
+
+func emptyRouteMatch(match RouteMatch) bool {
+	return len(match.TaskTypes) == 0 && len(match.Tenants) == 0 && len(match.UserTiers) == 0
 }
 
 func (a *App) applyPricingTable() {

@@ -100,8 +100,8 @@ X-Augur-Cost-Budget-USD: 0.05
 If clients do not send these headers, Augur uses a local prompt classifier. It
 does not call a model before routing.
 
-Request type is a routing signal. Backend capability filtering and first-class
-route rules are planned V1 work.
+Request type is a routing signal. Route rules can match task type, tenant, and
+user tier. Backend capability filtering is planned V1 work.
 
 ## Runtime State
 
@@ -169,7 +169,6 @@ See [Config reference](config-reference.md) for fields.
 ## Current Gaps
 
 - TLS termination must be handled outside Augur.
-- First-class route rule config is not included.
 - Backend capability filtering is not included.
 - Deterministic canary percentage rollout is not included.
 - Route-specific fallback chains are not included.

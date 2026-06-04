@@ -234,6 +234,34 @@ func TestBuildFiltersFromConfig(t *testing.T) {
 	}
 }
 
+func TestBuildRouteRulesFromConfig(t *testing.T) {
+	routes := buildRouteRules([]appconfig.Route{
+		{
+			Name: "premium-reasoning",
+			Match: appconfig.RouteMatch{
+				TaskTypes: []core.RequestType{core.Reasoning},
+				Tenants:   []string{"premium"},
+				UserTiers: []string{"premium"},
+			},
+			Candidates: []appconfig.RouteCandidate{
+				{Backend: "strong"},
+				{Backend: "balanced"},
+			},
+		},
+	})
+
+	if len(routes) != 1 {
+		t.Fatalf("routes got %+v", routes)
+	}
+	route := routes[0]
+	if route.Name != "premium-reasoning" || route.Match.TaskTypes[0] != core.Reasoning {
+		t.Fatalf("route got %+v", route)
+	}
+	if len(route.Candidates) != 2 || route.Candidates[0] != "strong" || route.Candidates[1] != "balanced" {
+		t.Fatalf("candidates got %+v", route.Candidates)
+	}
+}
+
 func TestRequestDefaultsFromConfig(t *testing.T) {
 	temperature := 0.3
 	defaults := requestDefaults(appconfig.Budgets{
@@ -590,6 +618,7 @@ func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi
 	gateway, err := dataplane.New(dataplane.Config{
 		Router:          routing.Router,
 		Backends:        backends,
+		Routes:          buildRouteRules(config.Routes),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
