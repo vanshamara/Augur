@@ -75,6 +75,24 @@ func (s contextStream) Close() error {
 	return nil
 }
 
+type fakeAttemptError struct{}
+
+func (fakeAttemptError) Error() string {
+	return "all fallback backends failed"
+}
+
+func (fakeAttemptError) Is(target error) bool {
+	return target == dataplane.ErrAllBackendsFailed
+}
+
+func (fakeAttemptError) AttemptedBackends() []core.BackendID {
+	return []core.BackendID{"primary", "backup"}
+}
+
+func (fakeAttemptError) FallbackCount() int {
+	return 1
+}
+
 func TestChatCompletionsRoutesThroughGateway(t *testing.T) {
 	gateway := &fakeGateway{
 		resp: core.Response{
@@ -160,6 +178,38 @@ func TestChatCompletionsWritesRouteHeader(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Augur-Route"); got != "chat-route" {
 		t.Fatalf("route header got %q", got)
+	}
+}
+
+func TestChatCompletionsWritesFallbackHeaders(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:         "req-1",
+			RouteName:         "chat-route",
+			Backend:           "backup",
+			AttemptedBackends: []core.BackendID{"primary", "backup"},
+			FallbackCount:     1,
+			OutputText:        "answer",
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Augur-Backend"); got != "backup" {
+		t.Fatalf("backend header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Fallback-Count"); got != "1" {
+		t.Fatalf("fallback count header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Attempted-Backends"); got != "primary,backup" {
+		t.Fatalf("attempted backends header got %q", got)
 	}
 }
 
@@ -622,6 +672,25 @@ func TestChatCompletionsMapsGatewayErrors(t *testing.T) {
 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletionsMapsAllFallbacksFailed(t *testing.T) {
+	server := testServer(t, &fakeGateway{err: fakeAttemptError{}})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Augur-Fallback-Count"); got != "1" {
+		t.Fatalf("fallback count header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Attempted-Backends"); got != "primary,backup" {
+		t.Fatalf("attempted backends header got %q", got)
 	}
 }
 

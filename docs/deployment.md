@@ -104,6 +104,9 @@ Request type is a routing signal. Route rules can match task type, tenant, and
 user tier. Backend capabilities remove incompatible backends before health
 filters and router selection.
 
+Routes can also define `fallbacks`. Augur tries those backends in order when the
+chosen backend fails with a retryable error before a complete response.
+
 ## Runtime State
 
 If `learning.persistence.enabled` is true, Augur writes learned reward and
@@ -151,6 +154,7 @@ Auth protects `/v1/chat/completions`. Health endpoints stay public.
 - Streaming: set `"stream": true`.
 - Hedging: configure `data_plane.hedge`.
 - Backend capabilities: set `backends[].capabilities`.
+- Route fallback chains: set `routes[].fallbacks`.
 - Canary rollback thresholds: configure `canary`. Deterministic percentage
   rollout is planned V1 work.
 - Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
@@ -172,7 +176,6 @@ See [Config reference](config-reference.md) for fields.
 
 - TLS termination must be handled outside Augur.
 - Deterministic canary percentage rollout is not included.
-- Route-specific fallback chains are not included.
 - Active health checks are not included.
 - Kubernetes manifests are not included.
 - Dashboards and alerts are not included.

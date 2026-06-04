@@ -26,18 +26,21 @@ routes:
       task_types: ["chat"]
     candidates:
       - backend: "fast"
+    fallbacks:
       - backend: "balanced"
   - name: "coding"
     match:
       task_types: ["coding"]
     candidates:
       - backend: "balanced"
+    fallbacks:
       - backend: "strong"
   - name: "reasoning"
     match:
       task_types: ["reasoning"]
     candidates:
       - backend: "balanced"
+    fallbacks:
       - backend: "strong"
   - name: "default"
     candidates:

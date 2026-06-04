@@ -73,6 +73,22 @@ type ChatCompletionStream struct {
 	done   bool
 }
 
+type APIError struct {
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("openai api status %d: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("openai api status %d", e.Status)
+}
+
+func (e *APIError) StatusCode() int {
+	return e.Status
+}
+
 func New(config Config) (*Client, error) {
 	if config.BaseURL == "" {
 		config.BaseURL = defaultBaseURL
@@ -128,6 +144,9 @@ func (c *Client) ChatCompletion(ctx context.Context, body ChatCompletionRequest)
 
 	var decoded chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return ChatCompletion{}, &APIError{Status: resp.StatusCode}
+		}
 		return ChatCompletion{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -175,7 +194,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, body ChatCompletionRe
 		defer resp.Body.Close()
 		var decoded chatResponse
 		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
-			return nil, fmt.Errorf("openai api status %d", resp.StatusCode)
+			return nil, &APIError{Status: resp.StatusCode}
 		}
 		return nil, decoded.errorValue(resp.StatusCode)
 	}
@@ -253,7 +272,7 @@ type chatStreamResponse struct {
 
 func (r chatResponse) errorValue(status int) error {
 	if r.Error != nil && r.Error.Message != "" {
-		return fmt.Errorf("openai api status %d: %s", status, r.Error.Message)
+		return &APIError{Status: status, Message: r.Error.Message}
 	}
-	return fmt.Errorf("openai api status %d", status)
+	return &APIError{Status: status}
 }

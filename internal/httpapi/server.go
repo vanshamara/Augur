@@ -213,10 +213,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("X-Augur-Backend", string(resp.Backend))
-	if resp.RouteName != "" {
-		w.Header().Set("X-Augur-Route", resp.RouteName)
-	}
+	writeResponseRoutingHeaders(w, resp)
 	writeJSON(w, http.StatusOK, body.response(req, resp, s.newID(), s.now()))
 }
 
@@ -241,6 +238,7 @@ func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	writeStreamRoutingHeaders(w, stream)
 	w.WriteHeader(http.StatusOK)
 	flush(w)
 
@@ -727,6 +725,7 @@ func bearerToken(value string) string {
 }
 
 func writeGatewayError(w http.ResponseWriter, err error) {
+	writeErrorAttemptHeaders(w, err)
 	switch {
 	case errors.Is(err, dataplane.ErrStreaming):
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
@@ -736,11 +735,64 @@ func writeGatewayError(w http.ResponseWriter, err error) {
 		errors.Is(err, dataplane.ErrNoCompatibleCandidates),
 		errors.Is(err, dataplane.ErrMissing):
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable", err.Error())
+	case errors.Is(err, dataplane.ErrAllBackendsFailed):
+		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusGatewayTimeout, "timeout", err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
 	}
+}
+
+type streamRoutingMetadata interface {
+	BackendID() core.BackendID
+	RouteName() string
+	AttemptedBackends() []core.BackendID
+	FallbackCount() int
+}
+
+type attemptErrorMetadata interface {
+	AttemptedBackends() []core.BackendID
+	FallbackCount() int
+}
+
+func writeResponseRoutingHeaders(w http.ResponseWriter, resp core.Response) {
+	w.Header().Set("X-Augur-Backend", string(resp.Backend))
+	if resp.RouteName != "" {
+		w.Header().Set("X-Augur-Route", resp.RouteName)
+	}
+	writeAttemptHeaders(w, resp.AttemptedBackends, resp.FallbackCount)
+}
+
+func writeStreamRoutingHeaders(w http.ResponseWriter, stream core.Stream) {
+	metadata, ok := stream.(streamRoutingMetadata)
+	if !ok {
+		return
+	}
+	w.Header().Set("X-Augur-Backend", string(metadata.BackendID()))
+	if metadata.RouteName() != "" {
+		w.Header().Set("X-Augur-Route", metadata.RouteName())
+	}
+	writeAttemptHeaders(w, metadata.AttemptedBackends(), metadata.FallbackCount())
+}
+
+func writeErrorAttemptHeaders(w http.ResponseWriter, err error) {
+	var metadata attemptErrorMetadata
+	if errors.As(err, &metadata) {
+		writeAttemptHeaders(w, metadata.AttemptedBackends(), metadata.FallbackCount())
+	}
+}
+
+func writeAttemptHeaders(w http.ResponseWriter, attempts []core.BackendID, fallbackCount int) {
+	w.Header().Set("X-Augur-Fallback-Count", strconv.Itoa(fallbackCount))
+	if len(attempts) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(attempts))
+	for _, id := range attempts {
+		parts = append(parts, string(id))
+	}
+	w.Header().Set("X-Augur-Attempted-Backends", strings.Join(parts, ","))
 }
 
 func writeError(w http.ResponseWriter, status int, kind string, message string) {

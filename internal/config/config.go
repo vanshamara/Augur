@@ -66,6 +66,7 @@ type Route struct {
 	Name       string           `json:"name"`
 	Match      RouteMatch       `json:"match"`
 	Candidates []RouteCandidate `json:"candidates"`
+	Fallbacks  []RouteCandidate `json:"fallbacks"`
 }
 
 type RouteMatch struct {
@@ -449,13 +450,11 @@ func validateRoutes(routes []Route, backends []Backend) error {
 		if len(route.Candidates) == 0 {
 			return fmt.Errorf("route %q must include at least one candidate", name)
 		}
-		for _, candidate := range route.Candidates {
-			if candidate.Backend == "" {
-				return fmt.Errorf("route %q candidate backend is required", name)
-			}
-			if !backendIDs[candidate.Backend] {
-				return fmt.Errorf("route %q references unknown backend %q", name, candidate.Backend)
-			}
+		if err := validateRouteBackends(name, "candidate", route.Candidates, backendIDs); err != nil {
+			return err
+		}
+		if err := validateRouteBackends(name, "fallback", route.Fallbacks, backendIDs); err != nil {
+			return err
 		}
 		if err := validateRouteMatch(name, route.Match); err != nil {
 			return err
@@ -465,6 +464,18 @@ func validateRoutes(routes []Route, backends []Backend) error {
 				return errors.New("only one default route can have an empty match")
 			}
 			hasDefault = true
+		}
+	}
+	return nil
+}
+
+func validateRouteBackends(name string, role string, entries []RouteCandidate, backendIDs map[core.BackendID]bool) error {
+	for _, entry := range entries {
+		if entry.Backend == "" {
+			return fmt.Errorf("route %q %s backend is required", name, role)
+		}
+		if !backendIDs[entry.Backend] {
+			return fmt.Errorf("route %q references unknown %s backend %q", name, role, entry.Backend)
 		}
 	}
 	return nil

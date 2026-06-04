@@ -311,10 +311,6 @@ func buildFilters(config appconfig.App, ids []core.BackendID) ([]dataplane.Filte
 func buildRouteRules(routes []appconfig.Route) []dataplane.RouteRule {
 	out := make([]dataplane.RouteRule, 0, len(routes))
 	for _, route := range routes {
-		candidates := make([]core.BackendID, 0, len(route.Candidates))
-		for _, candidate := range route.Candidates {
-			candidates = append(candidates, candidate.Backend)
-		}
 		out = append(out, dataplane.RouteRule{
 			Name: route.Name,
 			Match: dataplane.RouteMatch{
@@ -322,8 +318,17 @@ func buildRouteRules(routes []appconfig.Route) []dataplane.RouteRule {
 				Tenants:   route.Match.Tenants,
 				UserTiers: route.Match.UserTiers,
 			},
-			Candidates: candidates,
+			Candidates: routeCandidateBackends(route.Candidates),
+			Fallbacks:  routeCandidateBackends(route.Fallbacks),
 		})
+	}
+	return out
+}
+
+func routeCandidateBackends(candidates []appconfig.RouteCandidate) []core.BackendID {
+	out := make([]core.BackendID, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, candidate.Backend)
 	}
 	return out
 }

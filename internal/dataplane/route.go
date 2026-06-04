@@ -10,6 +10,7 @@ type RouteRule struct {
 	Name       string
 	Match      RouteMatch
 	Candidates []core.BackendID
+	Fallbacks  []core.BackendID
 }
 
 type RouteMatch struct {
@@ -21,6 +22,7 @@ type RouteMatch struct {
 type RouteDecision struct {
 	Name       string
 	Candidates []core.BackendID
+	Fallbacks  []core.BackendID
 }
 
 type RouteSelector struct {
@@ -34,6 +36,7 @@ func NewRouteSelector(routes []RouteRule) *RouteSelector {
 			Name:       route.Name,
 			Match:      copyRouteMatch(route.Match),
 			Candidates: append([]core.BackendID(nil), route.Candidates...),
+			Fallbacks:  append([]core.BackendID(nil), route.Fallbacks...),
 		}
 	}
 	return &RouteSelector{routes: copied}
@@ -48,6 +51,7 @@ func (s *RouteSelector) Select(req core.Request, all []core.BackendID) RouteDeci
 			return RouteDecision{
 				Name:       route.Name,
 				Candidates: routeCandidates(route.Candidates, all),
+				Fallbacks:  routeCandidates(route.Fallbacks, all),
 			}
 		}
 	}

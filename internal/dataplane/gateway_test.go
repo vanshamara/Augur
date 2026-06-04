@@ -54,22 +54,31 @@ func (f *fakeBackend) Call(ctx context.Context, req core.Request) (core.Response
 
 type fakeStreamBackend struct {
 	*fakeBackend
-	chunks []core.StreamChunk
+	chunks    []core.StreamChunk
+	streamErr error
+	recvErr   error
 }
 
 func (f *fakeStreamBackend) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
 	f.calls.Add(1)
-	return &fakeStream{chunks: append([]core.StreamChunk(nil), f.chunks...)}, nil
+	if f.streamErr != nil {
+		return nil, f.streamErr
+	}
+	return &fakeStream{chunks: append([]core.StreamChunk(nil), f.chunks...), recvErr: f.recvErr}, nil
 }
 
 type fakeStream struct {
-	chunks []core.StreamChunk
-	index  int
-	closed bool
+	chunks  []core.StreamChunk
+	recvErr error
+	index   int
+	closed  bool
 }
 
 func (s *fakeStream) Recv() (core.StreamChunk, error) {
 	if s.index >= len(s.chunks) {
+		if s.recvErr != nil {
+			return core.StreamChunk{}, s.recvErr
+		}
 		return core.StreamChunk{}, io.EOF
 	}
 	chunk := s.chunks[s.index]
@@ -80,6 +89,18 @@ func (s *fakeStream) Recv() (core.StreamChunk, error) {
 func (s *fakeStream) Close() error {
 	s.closed = true
 	return nil
+}
+
+type fakeStatusError struct {
+	status int
+}
+
+func (e fakeStatusError) Error() string {
+	return "upstream status " + itoa(e.status)
+}
+
+func (e fakeStatusError) StatusCode() int {
+	return e.status
 }
 
 type recordingFilter struct {
@@ -301,6 +322,217 @@ func TestGatewayReturnsCompatibilityErrorWhenNoBackendSupportsTask(t *testing.T)
 	}
 	if chat.calls.Load() != 0 {
 		t.Fatalf("incompatible backend was called %d times", chat.calls.Load())
+	}
+}
+
+func TestGatewayFallsBackOnTimeout(t *testing.T) {
+	primary := &fakeBackend{id: "primary", err: context.DeadlineExceeded}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "backup" || resp.FallbackCount != 1 {
+		t.Fatalf("fallback response got %+v", resp)
+	}
+	if len(resp.AttemptedBackends) != 2 || resp.AttemptedBackends[0] != "primary" || resp.AttemptedBackends[1] != "backup" {
+		t.Fatalf("attempts got %+v", resp.AttemptedBackends)
+	}
+}
+
+func TestGatewayFallsBackOnServerError(t *testing.T) {
+	primary := &fakeBackend{id: "primary", err: fakeStatusError{status: 500}}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "backup" || primary.calls.Load() != 1 || backup.calls.Load() != 1 {
+		t.Fatalf("fallback calls got resp=%+v primary=%d backup=%d", resp, primary.calls.Load(), backup.calls.Load())
+	}
+}
+
+func TestGatewayFallsBackOnRateLimit(t *testing.T) {
+	primary := &fakeBackend{id: "primary", err: fakeStatusError{status: 429}}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "backup" {
+		t.Fatalf("fallback response got %+v", resp)
+	}
+}
+
+func TestGatewayDoesNotFallbackOnClientError(t *testing.T) {
+	primary := &fakeBackend{id: "primary", err: fakeStatusError{status: 400}}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err == nil {
+		t.Fatal("client error should be returned")
+	}
+	if resp.Backend != "primary" || backup.calls.Load() != 0 {
+		t.Fatalf("non-retryable fallback got resp=%+v backup calls=%d", resp, backup.calls.Load())
+	}
+}
+
+func TestGatewayReturnsAllBackendsFailed(t *testing.T) {
+	primary := &fakeBackend{id: "primary", err: fakeStatusError{status: 500}}
+	backup := &fakeBackend{id: "backup", err: fakeStatusError{status: 503}}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if !errors.Is(err, ErrAllBackendsFailed) {
+		t.Fatalf("all failed error got %v", err)
+	}
+	if resp.Backend != "backup" || resp.FallbackCount != 1 {
+		t.Fatalf("all failed response got %+v", resp)
+	}
+	if len(resp.AttemptedBackends) != 2 {
+		t.Fatalf("attempts got %+v", resp.AttemptedBackends)
+	}
+}
+
+func TestGatewayStopsFallbackWhenCostBudgetIsSpent(t *testing.T) {
+	primary := &fakeBackend{
+		id: "primary",
+		response: core.Response{
+			Outcome: core.Outcome{
+				CostUSD: 0.02,
+				Errored: true,
+			},
+		},
+	}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			CostBudget: 0.01,
+		},
+	})
+	if !errors.Is(err, ErrFallbackBudgetExceeded) {
+		t.Fatalf("budget error got %v", err)
+	}
+	if backup.calls.Load() != 0 {
+		t.Fatalf("backup should not be called after budget is spent, got %d", backup.calls.Load())
+	}
+}
+
+func TestGatewayUsesFallbackWhenPrimaryFilteredOut(t *testing.T) {
+	primary := &fakeBackend{id: "primary"}
+	backup := &fakeBackend{id: "backup"}
+	health := NewHealthFilter([]core.BackendID{"primary", "backup"})
+	health.Set("primary", false)
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+		Filters: []Filter{health},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "backup" || primary.calls.Load() != 0 {
+		t.Fatalf("filtered fallback got resp=%+v primary calls=%d", resp, primary.calls.Load())
 	}
 }
 
@@ -764,6 +996,101 @@ func TestGatewayStreamsRoutedBackend(t *testing.T) {
 	}
 	if model.calls.Load() != 1 {
 		t.Fatalf("stream calls got %d", model.calls.Load())
+	}
+}
+
+func TestGatewayStreamsFallbackWhenPrimaryFailsBeforeFirstByte(t *testing.T) {
+	primary := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "primary"},
+		streamErr:   fakeStatusError{status: 503},
+	}
+	backup := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "backup"},
+		chunks: []core.StreamChunk{
+			{Delta: "ok"},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if chunk.Backend != "backup" || chunk.FallbackCount != 1 {
+		t.Fatalf("fallback chunk got %+v", chunk)
+	}
+	if len(chunk.AttemptedBackends) != 2 || primary.calls.Load() != 1 || backup.calls.Load() != 1 {
+		t.Fatalf("stream attempts got chunk=%+v primary=%d backup=%d", chunk, primary.calls.Load(), backup.calls.Load())
+	}
+}
+
+func TestGatewayDoesNotFallbackAfterStreamStarts(t *testing.T) {
+	primary := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "primary"},
+		chunks: []core.StreamChunk{
+			{Delta: "partial"},
+		},
+		recvErr: fakeStatusError{status: 503},
+	}
+	backup := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "backup"},
+		chunks: []core.StreamChunk{
+			{Delta: "backup"},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+	if chunk.Delta != "partial" {
+		t.Fatalf("first chunk got %+v", chunk)
+	}
+	_, err = stream.Recv()
+	if err == nil {
+		t.Fatal("stream error should be returned after first byte")
+	}
+	if backup.calls.Load() != 0 {
+		t.Fatalf("backup should not be called after stream starts, got %d", backup.calls.Load())
 	}
 }
 

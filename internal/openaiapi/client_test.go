@@ -3,6 +3,7 @@ package openaiapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,10 @@ func TestChatCompletionReturnsAPIError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected api error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("api error got %v", err)
 	}
 }
 

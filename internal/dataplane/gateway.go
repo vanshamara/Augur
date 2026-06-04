@@ -144,24 +144,29 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	if candidates.Err != nil {
 		return nil, candidates.Err
 	}
-	if len(candidates.IDs) == 0 {
+	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
 		return nil, ErrNoCandidates
+	}
+	if len(candidates.Fallbacks) > 0 {
+		return g.streamWithFallbacks(ctx, req, candidates)
 	}
 
 	remaining := copyCandidates(candidates.IDs)
+	attempts := []core.BackendID{}
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
 			return nil, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
-		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName)
+		attempts = append(attempts, choice)
+		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName, attempts, 0)
 		if !errors.Is(err, ErrLoadShed) {
 			return stream, err
 		}
 		remaining = without(remaining, choice)
 	}
-	return nil, ErrLoadShed
+	return nil, newAttemptError(ErrLoadShed, attempts, 0)
 }
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
@@ -169,8 +174,11 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 	if candidates.Err != nil {
 		return core.Response{}, candidates.Err
 	}
-	if len(candidates.IDs) == 0 {
+	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
 		return core.Response{}, ErrNoCandidates
+	}
+	if len(candidates.Fallbacks) > 0 {
+		return g.callWithFallbacks(ctx, req, candidates)
 	}
 	if !g.shouldHedge(req, candidates.IDs) {
 		return g.callRouted(ctx, req, candidates)
@@ -181,17 +189,20 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 type candidateSet struct {
 	RouteName string
 	IDs       []core.BackendID
+	Fallbacks []core.BackendID
 	Err       error
 }
 
 func (g *Gateway) candidates(req core.Request) candidateSet {
 	decision := g.routes.Select(req, g.ids)
 	candidates := copyCandidates(decision.Candidates)
-	if len(candidates) == 0 {
+	fallbacks := copyCandidates(decision.Fallbacks)
+	if len(candidates) == 0 && len(fallbacks) == 0 {
 		return candidateSet{RouteName: decision.Name}
 	}
 	candidates = g.compatibleCandidates(req, candidates)
-	if len(candidates) == 0 {
+	fallbacks = g.compatibleCandidates(req, fallbacks)
+	if len(candidates) == 0 && len(fallbacks) == 0 {
 		requestType := requestTypeForCapabilities(req)
 		return candidateSet{
 			RouteName: decision.Name,
@@ -200,28 +211,114 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 	}
 	for _, filter := range g.filters {
 		candidates = filter.Apply(req, candidates)
-		if len(candidates) == 0 {
-			return candidateSet{RouteName: decision.Name}
+		if len(fallbacks) > 0 {
+			fallbacks = filter.Apply(req, fallbacks)
 		}
 	}
-	return candidateSet{RouteName: decision.Name, IDs: candidates}
+	return candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks}
 }
 
 func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
+	if len(candidates.Fallbacks) > 0 {
+		return g.callWithFallbacks(ctx, req, candidates)
+	}
+
 	remaining := copyCandidates(candidates.IDs)
+	attempts := []core.BackendID{}
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
 			return core.Response{}, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, choice, len(remaining))
+		attempts = append(attempts, choice)
 		resp, err := g.callBackend(ctx, req, choice, candidates.RouteName)
+		resp = annotateResponse(resp, attempts, 0, candidates.RouteName)
 		if !errors.Is(err, ErrLoadShed) {
 			return resp, err
 		}
 		remaining = without(remaining, choice)
 	}
-	return core.Response{}, ErrLoadShed
+	return core.Response{}, newAttemptError(ErrLoadShed, attempts, 0)
+}
+
+func (g *Gateway) callWithFallbacks(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
+	chain := g.fallbackAttemptChain(ctx, req, candidates)
+	if len(chain) == 0 {
+		return core.Response{}, ErrNoCandidates
+	}
+
+	attempts := []core.BackendID{}
+	var lastResp core.Response
+	var lastErr error
+	spent := 0.0
+
+	for _, id := range chain {
+		if len(attempts) > 0 && costBudgetSpent(req, spent) {
+			fallbackCount := fallbackCountForAttempts(attempts)
+			return annotateResponse(lastResp, attempts, fallbackCount, candidates.RouteName),
+				newAttemptError(ErrFallbackBudgetExceeded, attempts, fallbackCount)
+		}
+		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, id, len(chain)-len(attempts))
+		attempts = append(attempts, id)
+		resp, err := g.callBackend(ctx, req, id, candidates.RouteName)
+		spent += resp.CostUSD
+		fallbackCount := fallbackCountForAttempts(attempts)
+		resp = annotateResponse(resp, attempts, fallbackCount, candidates.RouteName)
+		if err == nil && !resp.Errored {
+			return resp, nil
+		}
+		lastResp = resp
+		lastErr = err
+		if !retryableFailure(ctx, resp, err) {
+			return resp, err
+		}
+	}
+
+	fallbackCount := fallbackCountForAttempts(attempts)
+	return annotateResponse(lastResp, attempts, fallbackCount, candidates.RouteName),
+		newAttemptError(lastErr, attempts, fallbackCount)
+}
+
+func (g *Gateway) streamWithFallbacks(ctx context.Context, req core.Request, candidates candidateSet) (core.Stream, error) {
+	chain := g.fallbackAttemptChain(ctx, req, candidates)
+	if len(chain) == 0 {
+		return nil, ErrNoCandidates
+	}
+
+	attempts := []core.BackendID{}
+	var lastErr error
+	for _, id := range chain {
+		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, id, len(chain)-len(attempts))
+		attempts = append(attempts, id)
+		fallbackCount := fallbackCountForAttempts(attempts)
+		stream, err := g.streamBackend(ctx, req, id, candidates.RouteName, attempts, fallbackCount)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if !retryableFailure(ctx, core.Response{Backend: id, Outcome: core.Outcome{Errored: true}}, err) {
+			return nil, err
+		}
+	}
+
+	return nil, newAttemptError(lastErr, attempts, fallbackCountForAttempts(attempts))
+}
+
+func (g *Gateway) fallbackAttemptChain(ctx context.Context, req core.Request, candidates candidateSet) []core.BackendID {
+	chain := []core.BackendID{}
+	if len(candidates.IDs) > 0 {
+		choice := g.router.Pick(ctx, req, candidates.IDs)
+		if choice != "" {
+			chain = append(chain, choice)
+		}
+	}
+	for _, id := range candidates.Fallbacks {
+		if !containsBackend(chain, id) {
+			chain = append(chain, id)
+		}
+	}
+	return chain
 }
 
 func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
@@ -435,7 +532,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	return resp, err
 }
 
-func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string) (core.Stream, error) {
+func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string, attempts []core.BackendID, fallbackCount int) (core.Stream, error) {
 	release, ok := g.acquire(req, id)
 	if !ok {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
@@ -466,13 +563,15 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		return nil, err
 	}
 	return &gatewayStream{
-		ctx:       ctx,
-		gateway:   g,
-		req:       req,
-		id:        id,
-		routeName: routeName,
-		stream:    stream,
-		release:   release,
+		ctx:           ctx,
+		gateway:       g,
+		req:           req,
+		id:            id,
+		routeName:     routeName,
+		attempts:      append([]core.BackendID(nil), attempts...),
+		fallbackCount: fallbackCount,
+		stream:        stream,
+		release:       release,
 	}, nil
 }
 
@@ -489,15 +588,17 @@ func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, 
 }
 
 type gatewayStream struct {
-	ctx       context.Context
-	gateway   *Gateway
-	req       core.Request
-	id        core.BackendID
-	routeName string
-	stream    core.Stream
-	release   Release
-	observed  bool
-	closed    bool
+	ctx           context.Context
+	gateway       *Gateway
+	req           core.Request
+	id            core.BackendID
+	routeName     string
+	attempts      []core.BackendID
+	fallbackCount int
+	stream        core.Stream
+	release       Release
+	observed      bool
+	closed        bool
 }
 
 func (s *gatewayStream) Recv() (core.StreamChunk, error) {
@@ -514,6 +615,7 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	if chunk.Backend == "" {
 		chunk.Backend = s.id
 	}
+	chunk = annotateStreamChunk(chunk, s.attempts, s.fallbackCount)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			resp := core.Response{RequestID: s.req.ID, TenantID: s.req.TenantID, RouteName: s.routeName, Backend: s.id, Outcome: core.Outcome{Errored: true}}
@@ -541,6 +643,22 @@ func (s *gatewayStream) Close() error {
 	err := s.stream.Close()
 	s.closeRelease()
 	return err
+}
+
+func (s *gatewayStream) BackendID() core.BackendID {
+	return s.id
+}
+
+func (s *gatewayStream) RouteName() string {
+	return s.routeName
+}
+
+func (s *gatewayStream) AttemptedBackends() []core.BackendID {
+	return append([]core.BackendID(nil), s.attempts...)
+}
+
+func (s *gatewayStream) FallbackCount() int {
+	return s.fallbackCount
 }
 
 func (s *gatewayStream) observe(resp core.Response, err error) {

@@ -247,6 +247,9 @@ func TestBuildRouteRulesFromConfig(t *testing.T) {
 				{Backend: "strong"},
 				{Backend: "balanced"},
 			},
+			Fallbacks: []appconfig.RouteCandidate{
+				{Backend: "safe"},
+			},
 		},
 	})
 
@@ -259,6 +262,9 @@ func TestBuildRouteRulesFromConfig(t *testing.T) {
 	}
 	if len(route.Candidates) != 2 || route.Candidates[0] != "strong" || route.Candidates[1] != "balanced" {
 		t.Fatalf("candidates got %+v", route.Candidates)
+	}
+	if len(route.Fallbacks) != 1 || route.Fallbacks[0] != "safe" {
+		t.Fatalf("fallbacks got %+v", route.Fallbacks)
 	}
 }
 

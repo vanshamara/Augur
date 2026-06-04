@@ -39,6 +39,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 				},
 				"candidates": [
 					{"backend": "fast"}
+				],
+				"fallbacks": [
+					{"backend": "fast"}
 				]
 			}
 		],
@@ -134,6 +137,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Routes[0].Match.TaskTypes[0] != "reasoning" || config.Routes[0].Candidates[0].Backend != "fast" {
 		t.Fatalf("route details got %+v", config.Routes[0])
+	}
+	if len(config.Routes[0].Fallbacks) != 1 || config.Routes[0].Fallbacks[0].Backend != "fast" {
+		t.Fatalf("route fallbacks got %+v", config.Routes[0].Fallbacks)
 	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
@@ -314,6 +320,8 @@ routes:
   - name: "default"
     candidates:
       - backend: "fast"
+    fallbacks:
+      - backend: "fast"
 router:
   type: "p2c"
   seed: 9
@@ -418,6 +426,9 @@ budgets:
 	if len(config.Routes) != 1 || config.Routes[0].Name != "default" {
 		t.Fatalf("routes got %+v", config.Routes)
 	}
+	if len(config.Routes[0].Fallbacks) != 1 || config.Routes[0].Fallbacks[0].Backend != "fast" {
+		t.Fatalf("route fallbacks got %+v", config.Routes[0].Fallbacks)
+	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
 	}
@@ -507,6 +518,20 @@ func TestParseRejectsRouteWithUnknownBackend(t *testing.T) {
 	}`))
 	if err == nil {
 		t.Fatal("route with unknown backend should fail")
+	}
+}
+
+func TestParseRejectsRouteWithUnknownFallbackBackend(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{
+			"name": "bad",
+			"candidates": [{"backend": "a"}],
+			"fallbacks": [{"backend": "missing"}]
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("route with unknown fallback backend should fail")
 	}
 }
 

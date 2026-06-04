@@ -46,21 +46,25 @@ type Outcome struct {
 
 // Response is an Outcome tagged with the backend that produced it.
 type Response struct {
-	RequestID  string
-	TenantID   string
-	RouteName  string
-	Backend    BackendID
-	OutputText string
+	RequestID         string
+	TenantID          string
+	RouteName         string
+	Backend           BackendID
+	AttemptedBackends []BackendID
+	FallbackCount     int
+	OutputText        string
 	Outcome
 }
 
 type StreamChunk struct {
-	RequestID string
-	TenantID  string
-	RouteName string
-	Backend   BackendID
-	Delta     string
-	Done      bool
+	RequestID         string
+	TenantID          string
+	RouteName         string
+	Backend           BackendID
+	AttemptedBackends []BackendID
+	FallbackCount     int
+	Delta             string
+	Done              bool
 	Outcome
 }
 

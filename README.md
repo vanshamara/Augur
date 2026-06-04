@@ -23,6 +23,7 @@ Built or mostly built:
 - static, round-robin, least-loaded, EWMA, cost-aware, P2C, and bandit routers
 - route rules with task, tenant, tier, and candidate backend matching
 - backend capability filtering for chat, reasoning, coding, and embedding
+- route-specific fallback chains for retryable upstream failures
 - health, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - OpenAI-compatible backend adapter
 - streaming responses
@@ -39,8 +40,6 @@ Partial:
 
 - canary rollback helpers exist, but deterministic percentage rollout is not a
   first-class route rule yet
-- fallback exists for load shedding and hedging, but route-specific fallback
-  chains for normal upstream errors are not built yet
 - health filtering and circuit breaking exist, but active health checks are not
   built yet
 
@@ -49,7 +48,6 @@ Not included:
 - managed hosting
 - built-in TLS
 - deterministic canary percentage routing
-- route-specific fallback chains
 - active health checking
 - Kubernetes manifests
 - production dashboards
@@ -148,7 +146,9 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
-The response includes `X-Augur-Backend`, which shows the backend Augur picked.
+The response includes `X-Augur-Backend`, which shows the final backend Augur
+used. When a route fallback runs, Augur also returns `X-Augur-Fallback-Count`
+and `X-Augur-Attempted-Backends`.
 
 Send request-aware hints when the caller knows the workload:
 

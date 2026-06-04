@@ -91,6 +91,7 @@ routes:
       user_tiers: ["premium"]
     candidates:
       - backend: "balanced"
+    fallbacks:
       - backend: "strong"
   - name: "default"
     candidates:
@@ -109,6 +110,8 @@ with no `match` block can be used as the default route.
 - `match.tenants`: optional list of tenant IDs.
 - `match.user_tiers`: optional list of user tiers.
 - `candidates`: backend IDs that this route may use.
+- `fallbacks`: ordered backend IDs to try when the chosen backend fails before
+  a complete response.
 
 If `routes` is empty, Augur keeps the older behavior and all configured backends
 are candidates. If routes are configured and none match a request, Augur returns
@@ -211,9 +214,19 @@ routing is planned V1 work.
 
 ## Fallback
 
-Route-specific fallback chains are planned V1 work. Current fallback behavior is
-limited to load shedding retries and hedging. The `max_completion_tokens`
-backend field is only a default output token limit, not a fallback route.
+Routes can define ordered fallback chains with `fallbacks`.
+
+Augur retries a fallback when the first backend fails with a timeout, 429, 5xx,
+transport error, load shed, missing backend, or health-filtered primary pool. It
+does not retry invalid client requests, auth failures, unsupported task types, or
+client cancellation.
+
+All attempts share the same request context. If failed attempts spend the request
+cost budget, Augur stops before calling another fallback.
+
+For streaming, Augur can fallback only before a stream is returned to the HTTP
+layer. After a stream has started, errors are returned on that stream and no new
+backend is called.
 
 ## Tenants
 
