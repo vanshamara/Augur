@@ -29,6 +29,8 @@ if [[ "$CHAT" == "1" ]]; then
     echo "AUGUR_SMOKE_CHAT=1 needs AUGUR_SMOKE_MODEL to be set to a provider model." >&2
     exit 1
   fi
+
+  echo "WARNING: AUGUR_SMOKE_CHAT=1 sends one real request to your provider and will incur a charge." >&2
 fi
 
 mkdir -p "$ROOT/bin"

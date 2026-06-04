@@ -36,6 +36,7 @@ Built or mostly built:
 - live learning from real gateway responses
 - learned state persistence
 - deterministic replay harness
+- local product-promise demo over scripted backends
 - local LiteLLM-style and Envoy-style router shims
 - Dockerfile and release checklist
 
@@ -196,6 +197,18 @@ cost among the feasible backends. This keeps cheaper models in play without
 letting cost override the configured quality target. Request type controls route
 matching and backend capability filtering. It is not a complete media or task
 gateway.
+
+## Demo The Product Promises
+
+Run the local demo to see all six routing promises in one pass:
+
+```bash
+go run ./cmd/demo
+```
+
+It checks health, latency, cost budget, task type, canary rollout, and fallback
+against scripted in-memory backends. No real provider is called, so it is
+deterministic and free. The command exits non-zero if any promise does not hold.
 
 ## Compare Routers
 

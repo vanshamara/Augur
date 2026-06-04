@@ -1,6 +1,9 @@
 # Baseline Router Report
 
-Date: June 2, 2026
+Date: June 3, 2026
+
+The table below was reproduced with `go run ./cmd/compare` on this date and the
+numbers were unchanged after the route-rule work landed.
 
 This report compares Augur router policies against two local proxy-style shims:
 `litellm-shuffle` and `envoy-least-request`.

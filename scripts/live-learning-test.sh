@@ -320,6 +320,9 @@ if [[ "${OPENAI_API_KEY:-}" == "" ]]; then
   exit 1
 fi
 
+echo "WARNING: this test sends real requests to your provider and will incur charges." >&2
+echo "It limits the request count, not your provider billing. Judge mode adds more calls." >&2
+
 if ! [[ "$ROUNDS" =~ ^[0-9]+$ ]]; then
   echo "AUGUR_LIVE_ROUNDS must be a positive integer." >&2
   exit 1
