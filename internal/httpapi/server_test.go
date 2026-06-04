@@ -1027,6 +1027,34 @@ func TestMetricsEndpointServesHandler(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsRateLimited(t *testing.T) {
+	server, err := New(Config{
+		Gateway:     &fakeGateway{resp: core.Response{Backend: "fast", OutputText: "ok"}},
+		RateLimiter: NewRateLimiter(0.001, 1),
+		Now:         func() time.Time { return time.Unix(123, 0) },
+		NewID:       func() string { return "chatcmpl-test" },
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hi"}]}`
+
+	first := httptest.NewRecorder()
+	server.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request status got %d body %s", first.Code, first.Body.String())
+	}
+
+	second := httptest.NewRecorder()
+	server.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body)))
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request status got %d, want 429", second.Code)
+	}
+	if second.Header().Get("Retry-After") == "" {
+		t.Fatal("rate-limited response should set Retry-After")
+	}
+}
+
 func TestMetricsEndpointAbsentWithoutHandler(t *testing.T) {
 	server := testServer(t, &fakeGateway{})
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)

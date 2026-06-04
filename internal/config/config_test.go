@@ -798,6 +798,30 @@ func TestParseDefaultsDecisionLogSizeWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestParseDefaultsRateLimitBurst(t *testing.T) {
+	app, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"enabled":true,"requests_per_second":5}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if app.RateLimit.Burst != 5 {
+		t.Fatalf("rate limit burst got %d, want 5", app.RateLimit.Burst)
+	}
+}
+
+func TestParseRejectsEnabledRateLimitWithoutRate(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"enabled":true}}`))
+	if err == nil {
+		t.Fatal("enabled rate limit should require a positive requests_per_second")
+	}
+}
+
+func TestParseRejectsNegativeRateLimit(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"requests_per_second":-1}}`))
+	if err == nil {
+		t.Fatal("negative requests_per_second should fail")
+	}
+}
+
 func TestParseRejectsMissingJudgeModel(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true}}}`))
 	if err == nil {

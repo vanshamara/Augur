@@ -37,6 +37,7 @@ type Config struct {
 	Decisions      func() []dataplane.RouteDecisionRecord
 	Decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
 	MetricsHandler http.Handler
+	RateLimiter    *RateLimiter
 	AuthKeys       []string
 	Defaults       RequestDefaults
 	TenantHeader   string
@@ -71,6 +72,7 @@ type Server struct {
 	decisions      func() []dataplane.RouteDecisionRecord
 	decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
 	metricsHandler http.Handler
+	rateLimiter    *RateLimiter
 	authKeys       []string
 	defaults       RequestDefaults
 	tenantHeader   string
@@ -117,6 +119,7 @@ func New(config Config) (*Server, error) {
 		decisions:      config.Decisions,
 		decision:       config.Decision,
 		metricsHandler: config.MetricsHandler,
+		rateLimiter:    config.RateLimiter,
 		authKeys:       cleanAuthKeys(config.AuthKeys),
 		defaults:       config.Defaults,
 		tenantHeader:   config.TenantHeader,
@@ -219,31 +222,57 @@ func (s *Server) handleDecisionDebug(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthenticatedChatCompletions(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r) {
+	key, ok := s.authorize(r)
+	if !ok {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, http.StatusUnauthorized, "unauthorized", "valid API key is required")
+		return
+	}
+	if !s.allowRequest(key) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "client rate limit exceeded")
 		return
 	}
 	s.handleChatCompletions(w, r)
 }
 
 func (s *Server) authorized(r *http.Request) bool {
+	_, ok := s.authorize(r)
+	return ok
+}
+
+// authorize returns the matching client key when auth is enabled. With no keys
+// configured it allows the request and returns an empty key.
+func (s *Server) authorize(r *http.Request) (string, bool) {
 	if len(s.authKeys) == 0 {
-		return true
+		return "", true
 	}
 	key := bearerToken(r.Header.Get("Authorization"))
 	if key == "" {
 		key = strings.TrimSpace(r.Header.Get("X-Augur-API-Key"))
 	}
 	if key == "" {
-		return false
+		return "", false
 	}
 	for _, accepted := range s.authKeys {
 		if subtle.ConstantTimeCompare([]byte(key), []byte(accepted)) == 1 {
-			return true
+			return key, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// allowRequest applies the per-client rate limit. With auth off all traffic
+// shares one bucket, since there is no client key to tell callers apart.
+func (s *Server) allowRequest(key string) bool {
+	if s.rateLimiter == nil {
+		return true
+	}
+	identity := key
+	if identity == "" {
+		identity = "anonymous"
+	}
+	return s.rateLimiter.Allow(identity)
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {

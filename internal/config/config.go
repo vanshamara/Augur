@@ -39,6 +39,13 @@ type App struct {
 	Tenants   Tenants              `json:"tenants"`
 	Policy    control.PolicyConfig `json:"policy"`
 	Budgets   Budgets              `json:"budgets"`
+	RateLimit RateLimit            `json:"rate_limit"`
+}
+
+type RateLimit struct {
+	Enabled           bool    `json:"enabled"`
+	RequestsPerSecond float64 `json:"requests_per_second"`
+	Burst             int     `json:"burst"`
 }
 
 type Server struct {
@@ -461,6 +468,9 @@ func (a App) withDefaults() (App, error) {
 	if err := validateBudgets(a.Budgets); err != nil {
 		return App{}, err
 	}
+	if err := validateRateLimit(&a.RateLimit); err != nil {
+		return App{}, err
+	}
 	if a.Learning.Persistence.SaveEvery < 0 {
 		return App{}, errors.New("learning persistence save_every cannot be negative")
 	}
@@ -558,6 +568,34 @@ func validateBudgets(config Budgets) error {
 	}
 	if config.Temperature != nil && *config.Temperature < 0 {
 		return errors.New("budgets temperature cannot be negative")
+	}
+	return nil
+}
+
+// validateRateLimit checks the rate limit values and fills a sensible burst when
+// the limit is enabled without one.
+func validateRateLimit(config *RateLimit) error {
+	if config.RequestsPerSecond < 0 {
+		return errors.New("rate_limit requests_per_second cannot be negative")
+	}
+	if config.Burst < 0 {
+		return errors.New("rate_limit burst cannot be negative")
+	}
+	if !config.Enabled {
+		return nil
+	}
+	if config.RequestsPerSecond <= 0 {
+		return errors.New("rate_limit requests_per_second must be positive when enabled")
+	}
+	if config.Burst == 0 {
+		burst := int(config.RequestsPerSecond)
+		if float64(burst) < config.RequestsPerSecond {
+			burst++
+		}
+		if burst < 1 {
+			burst = 1
+		}
+		config.Burst = burst
 	}
 	return nil
 }

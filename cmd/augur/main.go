@@ -205,6 +205,7 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 		Decisions:      gateway.DecisionRecords,
 		Decision:       gateway.DecisionRecord,
 		MetricsHandler: metricsHandler,
+		RateLimiter:    buildRateLimiter(config.RateLimit),
 	})
 	if err != nil {
 		return err
@@ -471,6 +472,13 @@ func buildBackendPricing(backends []appconfig.Backend) map[core.BackendID]datapl
 		}
 	}
 	return out
+}
+
+func buildRateLimiter(config appconfig.RateLimit) *httpapi.RateLimiter {
+	if !config.Enabled {
+		return nil
+	}
+	return httpapi.NewRateLimiter(config.RequestsPerSecond, config.Burst)
 }
 
 func buildDecisionLog(config appconfig.DecisionLog) *dataplane.DecisionLog {

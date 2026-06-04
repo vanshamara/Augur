@@ -207,6 +207,25 @@ X-Augur-API-Key: first-client-key
 Auth protects `/v1/chat/completions`, `/debug/backends`, and
 `/debug/decisions`. Health endpoints stay public.
 
+## Rate Limiting
+
+Turn on a per-client request rate limit with `rate_limit`:
+
+```yaml
+rate_limit:
+  enabled: true
+  requests_per_second: 20
+  burst: 40
+```
+
+The limit applies to `/v1/chat/completions`. When `AUGUR_GATEWAY_API_KEYS` is
+set, each client key gets its own token bucket. When auth is off, all traffic
+shares one bucket, since there is no key to tell callers apart. `burst` defaults
+to the per-second rate when you leave it unset. Over-limit requests get HTTP 429
+with a `Retry-After` header. Like tenant limits, this is per process, so the
+effective limit across replicas is the per-replica limit times the replica
+count.
+
 ## Runtime Features
 
 - Streaming: set `"stream": true`.
@@ -216,6 +235,7 @@ Auth protects `/v1/chat/completions`, `/debug/backends`, and
 - Canary rollout: set `routes[].canary`.
 - Canary rollback thresholds: configure top-level `canary`.
 - Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
+- Per-client rate limit: enable `rate_limit`.
 - Live learning: use `router.type: "bandit"` and `learning.enabled: true`.
 - Persistence: enable `learning.persistence` before relying on learned state
   across restarts.
