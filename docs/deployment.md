@@ -100,6 +100,9 @@ X-Augur-Cost-Budget-USD: 0.05
 If clients do not send these headers, Augur uses a local prompt classifier. It
 does not call a model before routing.
 
+Request type is a routing signal. Backend capability filtering and first-class
+route rules are planned V1 work.
+
 ## Runtime State
 
 If `learning.persistence.enabled` is true, Augur writes learned reward and
@@ -146,7 +149,8 @@ Auth protects `/v1/chat/completions`. Health endpoints stay public.
 
 - Streaming: set `"stream": true`.
 - Hedging: configure `data_plane.hedge`.
-- Canary rollback: configure `canary`.
+- Canary rollback thresholds: configure `canary`. Deterministic percentage
+  rollout is planned V1 work.
 - Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
 - Live learning: use `router.type: "bandit"` and `learning.enabled: true`.
 - Persistence: enable `learning.persistence` before relying on learned state
@@ -165,5 +169,10 @@ See [Config reference](config-reference.md) for fields.
 ## Current Gaps
 
 - TLS termination must be handled outside Augur.
+- First-class route rule config is not included.
+- Backend capability filtering is not included.
+- Deterministic canary percentage rollout is not included.
+- Route-specific fallback chains are not included.
+- Active health checks are not included.
 - Kubernetes manifests are not included.
 - Dashboards and alerts are not included.

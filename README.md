@@ -1,13 +1,14 @@
 # Augur
 
-Augur is a Go inference gateway. It accepts OpenAI-style chat requests, routes
-them across configured backends, records the outcome, and can learn which
-backend to prefer.
+Augur is a self-hosted inference gateway. It accepts OpenAI-compatible chat
+requests and routes them across configured model backends using health, latency,
+cost, request shape, and optional learning.
 
 It is useful for:
 
 - routing across multiple OpenAI-compatible models
 - enforcing latency, cost, error, quality, and tenant limits
+- sending simple and complex requests to different backend pools
 - testing routing policies with deterministic replay
 - comparing learned routing against simple baseline routers
 
@@ -15,7 +16,7 @@ It is useful for:
 
 Augur is a v0 self-hosted gateway.
 
-Built:
+Built or mostly built:
 
 - OpenAI-style `/v1/chat/completions` HTTP API
 - JSON and YAML config
@@ -24,16 +25,33 @@ Built:
 - OpenAI-compatible backend adapter
 - streaming responses
 - optional gateway auth
+- request hints through headers and chat request metadata
+- local prompt classification for chat, reasoning, and coding requests
 - live learning from real gateway responses
 - learned state persistence
 - deterministic replay harness
 - local LiteLLM-style and Envoy-style router shims
 - Dockerfile and release checklist
 
+Partial:
+
+- task type affects routing features, but backend capability filtering is not a
+  first-class config field yet
+- canary rollback helpers exist, but deterministic percentage rollout is not a
+  first-class route rule yet
+- fallback exists for load shedding and hedging, but route-specific fallback
+  chains for normal upstream errors are not built yet
+- health filtering and circuit breaking exist, but active health checks are not
+  built yet
+
 Not included:
 
 - managed hosting
 - built-in TLS
+- first-class route rule config
+- deterministic canary percentage routing
+- route-specific fallback chains
+- active health checking
 - Kubernetes manifests
 - production dashboards
 - real traffic tuning for your workload
@@ -160,7 +178,8 @@ model, so it does not add routing cost.
 
 The request-aware example uses quality as a floor and then optimizes latency and
 cost among the feasible backends. This keeps cheaper models in play without
-letting cost override the configured quality target.
+letting cost override the configured quality target. Request type is currently a
+routing feature, not a complete media or task gateway.
 
 ## Compare Routers
 

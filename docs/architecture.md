@@ -1,6 +1,8 @@
 # Architecture
 
-Augur is a self-hosted Go gateway for OpenAI-style chat requests.
+Augur is a self-hosted Go inference gateway for OpenAI-compatible chat
+requests. It routes requests across configured model backends using operational
+signals, request hints, policy, and optional learning.
 
 ```text
 client
@@ -21,6 +23,10 @@ client
 5. `internal/backend/openai` sends the request to the provider.
 6. Augur returns the response and sets `X-Augur-Backend`.
 7. If live learning is enabled, `internal/live` updates reward and quality state.
+
+Route-specific fallback chains, deterministic canary percentage routing, and
+backend capability filtering are planned V1 work. Current fallback behavior is
+limited to load shedding retries and hedging.
 
 ## Main Packages
 
@@ -69,3 +75,5 @@ Augur includes the local gateway, Dockerfile, config examples, and tests.
 
 You still need to provide production hosting details such as TLS termination,
 Kubernetes manifests, dashboards, and workload-specific tuning.
+
+Augur does not yet expose first-class image, audio, or video routing APIs.

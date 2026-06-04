@@ -61,7 +61,7 @@ backends:
 - `id`: route-facing backend name. Defaults to `model` when omitted.
 - `model`: provider model name. Required.
 - cost fields: USD per token. These override `pricing.models`.
-- `max_completion_tokens`: backend fallback max output token count.
+- `max_completion_tokens`: backend default max output token count.
 
 ## Pricing
 
@@ -165,7 +165,15 @@ canary:
   min_samples: 20
 ```
 
-These values control rollback decisions for canary checks.
+These values configure rollback decisions for canary checks. They do not enable
+deterministic percentage rollout by themselves. First-class canary percentage
+routing is planned V1 work.
+
+## Fallback
+
+Route-specific fallback chains are planned V1 work. Current fallback behavior is
+limited to load shedding retries and hedging. The `max_completion_tokens`
+backend field is only a default output token limit, not a fallback route.
 
 ## Tenants
 
@@ -261,6 +269,10 @@ When these values are missing, Augur infers a request type from the prompt. The
 local classifier sends simple or spam-like prompts toward cheaper chat behavior
 and marks coding or reasoning prompts as higher-need work. Headers and metadata
 override the inferred values.
+
+Request type is currently a routing feature. Backend capability filtering is
+planned V1 work, and Augur does not yet expose first-class image, audio, or video
+request APIs.
 
 The same values can be sent in chat request `metadata`:
 

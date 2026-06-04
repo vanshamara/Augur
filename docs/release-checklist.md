@@ -25,6 +25,8 @@ Use this before making the repo public or cutting a release.
 - [ ] Update `README.md`.
 - [ ] Update `docs/config-reference.md` when config fields change.
 - [ ] Update `docs/deployment.md` when runtime behavior changes.
+- [ ] Confirm public docs separate built, partial, and not included features.
+- [ ] Confirm canary and fallback wording matches the implementation.
 - [ ] Keep `docs-private/` out of public commits.
 
 ## Smoke
