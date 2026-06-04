@@ -21,15 +21,52 @@ export AUGUR_SMOKE_CHAT=1
 scripts/smoke-test.sh
 ```
 
+Run a bounded live learning test when you want to verify request-aware routing
+against real provider calls:
+
+```bash
+cp .env.example .env.local
+# edit .env.local and set OPENAI_API_KEY
+scripts/live-learning-test.sh
+```
+
+The live learning script sends real requests, prints the selected backend for
+each request, and verifies that learned state was saved. It is capped by request
+count, not by provider billing.
+
+Enable judge scoring for sampled quality labels:
+
+```bash
+AUGUR_LIVE_JUDGE=1 \
+AUGUR_LIVE_JUDGE_MODEL=gpt-4.1-mini \
+AUGUR_LIVE_JUDGE_SAMPLE_RATE=0.25 \
+scripts/live-learning-test.sh
+```
+
+Judge mode sends extra provider calls for the sampled responses.
+
+Run without hint headers to exercise automatic prompt classification:
+
+```bash
+AUGUR_LIVE_SEND_HINTS=0 scripts/live-learning-test.sh
+```
+
 ## Docker
 
 ```bash
 docker build -t augur:local .
+cp .env.example .env.local
+```
+
+Edit `.env.local` and set `OPENAI_API_KEY`.
+`AUGUR_BACKENDS` can contain one backend or many comma-separated `id=model`
+pairs. Env-only mode uses round-robin by default. Use `AUGUR_CONFIG` for
+cost-aware, latency-aware, or learned routing.
+
+```bash
 docker run --rm \
   -p 8080:8080 \
-  -e OPENAI_API_KEY \
-  -e AUGUR_ADDR=0.0.0.0:8080 \
-  -e AUGUR_BACKENDS=primary=gpt-4.1-mini \
+  --env-file .env.local \
   augur:local
 ```
 
@@ -47,6 +84,21 @@ Example configs live in `configs/`. Copy one outside the repo and replace model
 IDs with real provider model names.
 
 Keep API keys in environment variables, not config files.
+
+Use `configs/request-aware.example.yaml` when you want the bandit to learn from
+request type, budget, and tier hints.
+
+Clients can send these optional headers:
+
+```text
+X-Augur-Request-Type: reasoning
+X-Augur-User-Tier: premium
+X-Augur-Latency-Budget-Ms: 2400
+X-Augur-Cost-Budget-USD: 0.05
+```
+
+If clients do not send these headers, Augur uses a local prompt classifier. It
+does not call a model before routing.
 
 ## Runtime State
 

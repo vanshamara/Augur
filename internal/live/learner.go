@@ -199,7 +199,9 @@ func (l *Learner) handle(work judgeWork) {
 	if err != nil {
 		return
 	}
-	l.bandit.ObserveQualityWithContext(context.Background(), work.resp.RequestID, result.Score)
+	if l.bandit.ObserveQualityWithContext(context.Background(), work.resp.RequestID, result.Score) {
+		l.enqueueSave()
+	}
 }
 
 func (l *Learner) shouldScore(record control.DecisionRecord, req core.Request, resp core.Response) bool {

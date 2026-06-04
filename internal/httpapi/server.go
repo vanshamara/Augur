@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,6 +47,13 @@ type RequestDefaults struct {
 	MaxCompletionTokens int
 	Temperature         *float64
 	UserTier            string
+}
+
+type requestOptions struct {
+	RequestType     core.RequestType
+	LatencyBudgetMs int
+	CostBudgetUSD   float64
+	UserTier        string
 }
 
 type Server struct {
@@ -183,13 +191,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	options, err := requestOptionsFrom(r, body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
 	if body.Stream {
-		s.handleChatCompletionStream(w, r, body)
+		s.handleChatCompletionStream(w, r, body, options)
 		return
 	}
 
 	tenantID := s.tenantID(r)
-	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID))
+	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID), options)
 	resp, err := s.gateway.Call(r.Context(), req)
 	if err != nil {
 		writeGatewayError(w, err)
@@ -204,7 +217,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body.response(req, resp, s.newID(), s.now()))
 }
 
-func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Request, body chatCompletionRequest) {
+func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Request, body chatCompletionRequest, options requestOptions) {
 	gateway, ok := s.gateway.(StreamingGateway)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "streaming is not supported by this gateway")
@@ -212,7 +225,7 @@ func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Reque
 	}
 
 	tenantID := s.tenantID(r)
-	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID))
+	req := body.coreRequest(requestID(r), s.newID(), tenantID, s.defaultsForTenant(tenantID), options)
 	stream, err := gateway.Stream(r.Context(), req)
 	if err != nil {
 		writeGatewayError(w, err)
@@ -251,13 +264,14 @@ func (s *Server) handleChatCompletionStream(w http.ResponseWriter, r *http.Reque
 }
 
 type chatCompletionRequest struct {
-	Model               string        `json:"model"`
-	Messages            []chatMessage `json:"messages"`
-	Stream              bool          `json:"stream"`
-	N                   *int          `json:"n"`
-	MaxCompletionTokens int           `json:"max_completion_tokens"`
-	MaxTokens           int           `json:"max_tokens"`
-	Temperature         *float64      `json:"temperature"`
+	Model               string            `json:"model"`
+	Messages            []chatMessage     `json:"messages"`
+	Metadata            map[string]string `json:"metadata"`
+	Stream              bool              `json:"stream"`
+	N                   *int              `json:"n"`
+	MaxCompletionTokens int               `json:"max_completion_tokens"`
+	MaxTokens           int               `json:"max_tokens"`
+	Temperature         *float64          `json:"temperature"`
 }
 
 func (r chatCompletionRequest) validate() error {
@@ -281,7 +295,7 @@ func (r chatCompletionRequest) validate() error {
 	return nil
 }
 
-func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantID string, defaults RequestDefaults) core.Request {
+func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantID string, defaults RequestDefaults, options requestOptions) core.Request {
 	if id == "" {
 		id = fallbackID
 	}
@@ -290,6 +304,11 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantI
 		messages[i] = core.Message{Role: msg.Role, Content: msg.Content.Text}
 	}
 	prompt := flattenMessages(messages)
+	defaults = defaults.withOptions(options)
+	requestType := options.RequestType
+	if requestType == "" {
+		requestType = core.Chat
+	}
 	return core.Request{
 		ID:                  id,
 		TenantID:            tenantID,
@@ -299,7 +318,7 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantI
 		Temperature:         r.temperature(defaults.Temperature),
 		Features: core.Features{
 			PromptTokens:    estimateTokens(prompt),
-			Type:            core.Chat,
+			Type:            requestType,
 			LatencyBudgetMs: defaults.LatencyBudgetMs,
 			CostBudget:      defaults.CostBudgetUSD,
 			UserTier:        defaults.UserTier,
@@ -563,6 +582,136 @@ func (d RequestDefaults) withOverride(override RequestDefaults) RequestDefaults 
 		d.UserTier = override.UserTier
 	}
 	return d
+}
+
+func (d RequestDefaults) withOptions(options requestOptions) RequestDefaults {
+	if options.LatencyBudgetMs > 0 {
+		d.LatencyBudgetMs = options.LatencyBudgetMs
+	}
+	if options.CostBudgetUSD > 0 {
+		d.CostBudgetUSD = options.CostBudgetUSD
+	}
+	if options.UserTier != "" {
+		d.UserTier = options.UserTier
+	}
+	return d
+}
+
+func requestOptionsFrom(r *http.Request, body chatCompletionRequest) (requestOptions, error) {
+	options, err := requestOptionsFromMetadata(body.Metadata)
+	if err != nil {
+		return requestOptions{}, err
+	}
+	if err := options.applyHeaders(r.Header); err != nil {
+		return requestOptions{}, err
+	}
+	options.applyInference(inferRequestOptions(body, options.RequestType))
+	return options, nil
+}
+
+func requestOptionsFromMetadata(metadata map[string]string) (requestOptions, error) {
+	var options requestOptions
+	var err error
+	if value := metadataValue(metadata, "augur_request_type", "request_type"); value != "" {
+		options.RequestType, err = parseRequestType(value)
+		if err != nil {
+			return requestOptions{}, err
+		}
+	}
+	if value := metadataValue(metadata, "augur_user_tier", "user_tier"); value != "" {
+		options.UserTier = strings.TrimSpace(value)
+	}
+	if value := metadataValue(metadata, "augur_latency_budget_ms", "latency_budget_ms"); value != "" {
+		options.LatencyBudgetMs, err = parsePositiveInt(value, "latency budget")
+		if err != nil {
+			return requestOptions{}, err
+		}
+	}
+	if value := metadataValue(metadata, "augur_cost_budget_usd", "cost_budget_usd"); value != "" {
+		options.CostBudgetUSD, err = parsePositiveFloat(value, "cost budget")
+		if err != nil {
+			return requestOptions{}, err
+		}
+	}
+	return options, nil
+}
+
+func (o *requestOptions) applyHeaders(headers http.Header) error {
+	var err error
+	if value := headers.Get("X-Augur-Request-Type"); value != "" {
+		o.RequestType, err = parseRequestType(value)
+		if err != nil {
+			return err
+		}
+	}
+	if value := headers.Get("X-Augur-User-Tier"); value != "" {
+		o.UserTier = strings.TrimSpace(value)
+	}
+	if value := headers.Get("X-Augur-Latency-Budget-Ms"); value != "" {
+		o.LatencyBudgetMs, err = parsePositiveInt(value, "latency budget")
+		if err != nil {
+			return err
+		}
+	}
+	if value := headers.Get("X-Augur-Cost-Budget-USD"); value != "" {
+		o.CostBudgetUSD, err = parsePositiveFloat(value, "cost budget")
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *requestOptions) applyInference(inferred requestOptions) {
+	if o.RequestType == "" {
+		o.RequestType = inferred.RequestType
+	}
+	if o.LatencyBudgetMs == 0 {
+		o.LatencyBudgetMs = inferred.LatencyBudgetMs
+	}
+	if o.CostBudgetUSD == 0 {
+		o.CostBudgetUSD = inferred.CostBudgetUSD
+	}
+}
+
+func metadataValue(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseRequestType(value string) (core.RequestType, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(core.Chat):
+		return core.Chat, nil
+	case string(core.Reasoning):
+		return core.Reasoning, nil
+	case string(core.Coding):
+		return core.Coding, nil
+	case string(core.Embedding):
+		return core.Embedding, nil
+	default:
+		return "", fmt.Errorf("unsupported request type %q", value)
+	}
+}
+
+func parsePositiveInt(value string, name string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return parsed, nil
+}
+
+func parsePositiveFloat(value string, name string) (float64, error) {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive number", name)
+	}
+	return parsed, nil
 }
 
 func bearerToken(value string) string {

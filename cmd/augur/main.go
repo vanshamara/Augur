@@ -411,7 +411,7 @@ func buildLiveGateway(config appconfig.App, gateway live.Gateway, bandit *contro
 		judge, err := quality.NewJudgeScorer(quality.JudgeConfig{
 			Model:      config.Learning.Judge.Model,
 			Client:     client,
-			SampleRate: 1,
+			SampleRate: config.Policy.Exploration.JudgeSampleRate,
 			Seed:       config.Learning.Judge.Seed,
 		})
 		if err != nil {

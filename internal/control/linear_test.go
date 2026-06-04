@@ -60,3 +60,41 @@ func TestQualityModelClipsPrediction(t *testing.T) {
 		t.Fatalf("quality prediction should be clipped to one, got %v", prediction.Mean)
 	}
 }
+
+func TestQualityModelKeepsLowScoreLowWithRichFeatures(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	quality := NewQualityModel(LinearConfig{
+		Backends:       []core.BackendID{"cheap"},
+		Dimension:      FeatureDimension,
+		Start:          start,
+		Tau:            time.Minute,
+		PriorPrecision: 1,
+	})
+	defer quality.Close()
+
+	req := core.Request{
+		ID: "req-1",
+		Features: core.Features{
+			PromptTokens:    1400,
+			Type:            core.Reasoning,
+			LatencyBudgetMs: 3000,
+			CostBudget:      0.08,
+			UserTier:        "premium",
+		},
+	}
+	for i := 0; i < 20; i++ {
+		quality.Update(LinearObservation{
+			Backend:  "cheap",
+			Features: EncodeFeatures(req),
+			Value:    0.20,
+			Weight:   1,
+			At:       start,
+		})
+	}
+	quality.Flush()
+
+	prediction := quality.Predict("cheap", req, start)
+	if prediction.Mean >= 0.85 {
+		t.Fatalf("low quality score should stay below floor, got %v", prediction.Mean)
+	}
+}

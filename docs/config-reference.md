@@ -221,6 +221,14 @@ policy:
 
 Supported objectives are `minimize_latency`, `minimize_cost`, and `blend`.
 
+With `blend`, latency is measured in milliseconds and cost is measured in
+millionths of a dollar. For example, `latency_weight: 0.1` and `cost_weight: 1`
+treat 1000 ms and $0.0001 as equal objective cost.
+
+Use `min_quality` with judge scoring when answer quality matters. Augur treats
+quality as a floor first, then chooses the lowest objective cost among feasible
+backends.
+
 Supported `on_infeasible` values are `best_effort` and `fail_closed`.
 
 ## Budgets
@@ -235,3 +243,36 @@ budgets:
 
 These are request defaults used by the HTTP API. Tenant policy values can
 override them.
+
+## Request Hints
+
+Clients can override request shape with headers:
+
+```text
+X-Augur-Request-Type: reasoning
+X-Augur-User-Tier: premium
+X-Augur-Latency-Budget-Ms: 2400
+X-Augur-Cost-Budget-USD: 0.05
+```
+
+Supported request types are `chat`, `reasoning`, `coding`, and `embedding`.
+
+When these values are missing, Augur infers a request type from the prompt. The
+local classifier sends simple or spam-like prompts toward cheaper chat behavior
+and marks coding or reasoning prompts as higher-need work. Headers and metadata
+override the inferred values.
+
+The same values can be sent in chat request `metadata`:
+
+```json
+{
+  "metadata": {
+    "augur_request_type": "reasoning",
+    "augur_user_tier": "premium",
+    "augur_latency_budget_ms": "2400",
+    "augur_cost_budget_usd": "0.05"
+  }
+}
+```
+
+Headers override metadata when both are present.

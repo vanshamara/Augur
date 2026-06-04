@@ -71,13 +71,42 @@ export AUGUR_SMOKE_CHAT=1
 scripts/smoke-test.sh
 ```
 
+Run a bounded live learning test:
+
+```bash
+cp .env.example .env.local
+# edit .env.local and set OPENAI_API_KEY
+scripts/live-learning-test.sh
+```
+
+The live learning test sends real requests through Augur and verifies that
+learned state was saved. It limits request count, not provider billing.
+
+Enable judge scoring for sampled quality labels:
+
+```bash
+AUGUR_LIVE_JUDGE=1 \
+AUGUR_LIVE_JUDGE_MODEL=gpt-4.1-mini \
+AUGUR_LIVE_JUDGE_SAMPLE_RATE=0.25 \
+scripts/live-learning-test.sh
+```
+
+Judge mode sends extra provider calls for the sampled responses.
+
+Run the same live test without hint headers to exercise automatic prompt
+classification:
+
+```bash
+AUGUR_LIVE_SEND_HINTS=0 scripts/live-learning-test.sh
+```
+
 ## Run
 
 Use environment config for a quick local run:
 
 ```bash
 export OPENAI_API_KEY="..."
-export AUGUR_BACKENDS=fast=gpt-4.1-mini,cheap=gpt-4.1-nano
+export AUGUR_BACKENDS=fast=gpt-4.1-nano,balanced=gpt-4.1-mini,strong=gpt-4.1
 go run ./cmd/augur
 ```
 
@@ -85,7 +114,7 @@ Or use a config file:
 
 ```bash
 export OPENAI_API_KEY="..."
-export AUGUR_CONFIG="configs/augur.example.json"
+export AUGUR_CONFIG="configs/request-aware.example.yaml"
 go run ./cmd/augur
 ```
 
@@ -104,6 +133,35 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 The response includes `X-Augur-Backend`, which shows the backend Augur picked.
 
+Send request-aware hints when the caller knows the workload:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Augur-Request-Type: reasoning" \
+  -H "X-Augur-User-Tier: premium" \
+  -H "X-Augur-Latency-Budget-Ms: 2400" \
+  -H "X-Augur-Cost-Budget-USD: 0.05" \
+  -d '{
+    "model": "augur-chat",
+    "messages": [
+      {"role": "user", "content": "Solve this carefully."}
+    ]
+  }'
+```
+
+The bandit uses these hints, token estimates, and real outcomes to learn which
+backend fits each request shape.
+
+When hints are missing, Augur runs a local prompt classifier before routing. It
+marks simple or spam-like prompts as cheap chat, and marks harder coding or
+reasoning prompts as higher-need requests. This classifier does not call a
+model, so it does not add routing cost.
+
+The request-aware example uses quality as a floor and then optimizes latency and
+cost among the feasible backends. This keeps cheaper models in play without
+letting cost override the configured quality target.
+
 ## Compare Routers
 
 Run the deterministic comparison report:
@@ -120,8 +178,19 @@ Public examples are in `configs/`:
 
 - `minimal.example.json` and `minimal.example.yaml`
 - `cost-aware.example.json` and `cost-aware.example.yaml`
+- `request-aware.example.json` and `request-aware.example.yaml`
 - `augur.example.json` and `augur.example.yaml`
 - `deployment.example.json` and `deployment.example.yaml`
+
+For local Docker runs, copy the env example and fill in your real key:
+
+```bash
+cp .env.example .env.local
+```
+
+`AUGUR_BACKENDS` is a comma-separated list of `id=model` pairs. Env-only mode is
+for quick local runs and uses round-robin routing by default. Use a config file
+when you want cost-aware, latency-aware, or learned backend selection.
 
 Keep real config files and API keys outside the repo.
 

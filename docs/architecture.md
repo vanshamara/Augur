@@ -14,7 +14,7 @@ client
 ## Request Flow
 
 1. `cmd/augur` loads config and builds the gateway.
-2. `internal/httpapi` parses `/v1/chat/completions`.
+2. `internal/httpapi` parses `/v1/chat/completions` and request-aware hints.
 3. `internal/dataplane` applies filters such as health, circuit breaking,
    concurrency, tenant limits, hedging, and single flight.
 4. A router chooses one backend from the remaining candidates.

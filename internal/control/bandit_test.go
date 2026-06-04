@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -141,6 +142,96 @@ func TestBanditShadowTrafficUpdatesCounterfactualArm(t *testing.T) {
 	}
 }
 
+func TestBanditLearnsDifferentBackendsByRequestShape(t *testing.T) {
+	simple := shapedRequest(core.Features{
+		PromptTokens:    200,
+		Type:            core.Chat,
+		LatencyBudgetMs: 1600,
+		CostBudget:      0.05,
+		UserTier:        "standard",
+	})
+	reasoning := shapedRequest(core.Features{
+		PromptTokens:    1400,
+		Type:            core.Reasoning,
+		LatencyBudgetMs: 3000,
+		CostBudget:      0.08,
+		UserTier:        "premium",
+	})
+	latencyBound := shapedRequest(core.Features{
+		PromptTokens:    300,
+		Type:            core.Chat,
+		LatencyBudgetMs: 250,
+		CostBudget:      0.05,
+		UserTier:        "standard",
+	})
+	costBound := shapedRequest(core.Features{
+		PromptTokens:    300,
+		Type:            core.Chat,
+		LatencyBudgetMs: 2000,
+		CostBudget:      0.001,
+		UserTier:        "free",
+	})
+
+	t.Run("simple request prefers cheap", func(t *testing.T) {
+		bandit, ids, outcomes := requestShapeBandit(t)
+		defer bandit.Close()
+		trainBanditProfile(t, bandit, ids, outcomes, "simple", simple, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(100, 0.00005),
+			"fast":   outcome(400, 0.00020),
+			"strong": outcome(800, 0.00050),
+		})
+		wantBestBackend(t, bandit, ids, simple, "cheap")
+	})
+
+	t.Run("reasoning request prefers strong", func(t *testing.T) {
+		bandit, ids, outcomes := requestShapeBandit(t)
+		defer bandit.Close()
+		trainBanditProfile(t, bandit, ids, outcomes, "simple", simple, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(100, 0.00005),
+			"fast":   outcome(400, 0.00020),
+			"strong": outcome(800, 0.00050),
+		})
+		trainBanditProfile(t, bandit, ids, outcomes, "reasoning", reasoning, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(8000, 0.01000),
+			"fast":   outcome(5000, 0.00500),
+			"strong": outcome(1, 0.00001),
+		})
+		wantBestBackend(t, bandit, ids, reasoning, "strong")
+	})
+
+	t.Run("latency bound request prefers fast", func(t *testing.T) {
+		bandit, ids, outcomes := requestShapeBandit(t)
+		defer bandit.Close()
+		trainBanditProfile(t, bandit, ids, outcomes, "relaxed", simple, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(100, 0.00005),
+			"fast":   outcome(300, 0.00020),
+			"strong": outcome(600, 0.00050),
+		})
+		trainBanditProfile(t, bandit, ids, outcomes, "latency", latencyBound, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(2000, 0.00005),
+			"fast":   outcome(5, 0.00010),
+			"strong": outcome(1000, 0.00050),
+		})
+		wantBestBackend(t, bandit, ids, latencyBound, "fast")
+	})
+
+	t.Run("cost bound request prefers cheap", func(t *testing.T) {
+		bandit, ids, outcomes := requestShapeBandit(t)
+		defer bandit.Close()
+		trainBanditProfile(t, bandit, ids, outcomes, "normal", simple, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(400, 0.00005),
+			"fast":   outcome(100, 0.00020),
+			"strong": outcome(80, 0.00050),
+		})
+		trainBanditProfile(t, bandit, ids, outcomes, "cost", costBound, map[core.BackendID]core.Outcome{
+			"cheap":  outcome(100, 0.00001),
+			"fast":   outcome(100, 0.01000),
+			"strong": outcome(100, 0.02000),
+		})
+		wantBestBackend(t, bandit, ids, costBound, "cheap")
+	})
+}
+
 func TestRollbackGuardFlagsCanaryRegression(t *testing.T) {
 	guard := NewRollbackGuard(RollbackConfig{MinQuality: 0.85})
 	baseline := SLOSnapshot{P95Ms: 1000, ErrorRate: 0.01, Quality: 0.90}
@@ -224,6 +315,73 @@ func TestBanditEmitsTelemetry(t *testing.T) {
 	if !names["quality.score"] {
 		t.Fatal("quality score span was not emitted")
 	}
+}
+
+func shapedRequest(features core.Features) core.Request {
+	return core.Request{Features: features}
+}
+
+func requestShapeBandit(t *testing.T) (*BanditRouter, []core.BackendID, *map[core.BackendID]core.Outcome) {
+	t.Helper()
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewVirtual(start)
+	ids := []core.BackendID{"cheap", "fast", "strong"}
+	outcomes := map[core.BackendID]core.Outcome{}
+	bandit := NewBanditRouter(BanditConfig{
+		Policy: NewPolicy(PolicyConfig{
+			Objective: ObjectiveConfig{
+				Type:          BlendObjective,
+				LatencyWeight: 0.1,
+				CostWeight:    1,
+			},
+		}),
+		Backends: ids,
+		Clock:    clk,
+		Seed:     3,
+		Shadow: func(req core.Request, id core.BackendID, at time.Time) (core.Response, float64, bool) {
+			return core.Response{
+				RequestID: req.ID,
+				Backend:   id,
+				Outcome:   outcomes[id],
+			}, 0.9, true
+		},
+	})
+	return bandit, ids, &outcomes
+}
+
+func trainBanditProfile(t *testing.T, bandit *BanditRouter, ids []core.BackendID, current *map[core.BackendID]core.Outcome, label string, template core.Request, profile map[core.BackendID]core.Outcome) {
+	t.Helper()
+	*current = profile
+	for i := 0; i < 80; i++ {
+		req := template
+		req.ID = fmt.Sprintf("%s-%d", label, i)
+		choice := bandit.Pick(context.Background(), req, ids)
+		bandit.Observe(context.Background(), choice, core.Response{
+			RequestID: req.ID,
+			Backend:   choice,
+			Outcome:   profile[choice],
+		})
+		bandit.Flush()
+	}
+}
+
+func wantBestBackend(t *testing.T, bandit *BanditRouter, ids []core.BackendID, req core.Request, want core.BackendID) {
+	t.Helper()
+	bandit.Flush()
+	snapshot := bandit.RewardModel().Snapshot()
+	features := EncodeFeatures(req)
+	best := snapshot.BestArm(ids, features, bandit.clock.Now(), bandit.reward.tau, bandit.reward.priorPrecision, bandit.reward.initialMean)
+	if best != want {
+		for _, id := range ids {
+			prediction := snapshot.Predict(id, features, bandit.clock.Now(), bandit.reward.tau, bandit.reward.priorPrecision, bandit.reward.initialMean, false)
+			t.Logf("prediction %s mean %.3f count %.1f", id, prediction.Mean, prediction.Count)
+		}
+		t.Fatalf("best backend got %s want %s", best, want)
+	}
+}
+
+func outcome(latencyMs float64, costUSD float64) core.Outcome {
+	return core.Outcome{LatencyMs: latencyMs, CostUSD: costUSD}
 }
 
 func controlSpanNames(spans []sdktrace.ReadOnlySpan) map[string]bool {

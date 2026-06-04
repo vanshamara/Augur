@@ -186,6 +186,56 @@ func TestLearnerPersistsLearnedState(t *testing.T) {
 	}
 }
 
+func TestLearnerPersistsQualityStateAfterJudge(t *testing.T) {
+	clk := clock.NewVirtual(time.Unix(0, 0))
+	bandit := control.NewBanditRouter(control.BanditConfig{
+		Policy: control.NewPolicy(control.PolicyConfig{
+			Exploration: control.ExplorationConfig{
+				JudgeSampleRate: 1,
+			},
+		}),
+		Backends: []core.BackendID{"a"},
+		Clock:    clk,
+	})
+	gateway, err := dataplane.New(dataplane.Config{
+		Router:   bandit,
+		Backends: []backend.Backend{fakeBackend{id: "a"}},
+		Clock:    clk,
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+	store := &fakeStore{}
+	scorer := &fakeScorer{score: 0.92}
+	learner, err := New(Config{Gateway: gateway, Bandit: bandit, Scorer: scorer, Store: store, Seed: 7, SaveEvery: 1})
+	if err != nil {
+		t.Fatalf("new learner: %v", err)
+	}
+	defer learner.Close()
+
+	req := core.Request{
+		ID:     "req-1",
+		Prompt: "hello",
+		Features: core.Features{
+			Type:         core.Chat,
+			PromptTokens: 10,
+		},
+	}
+	_, err = learner.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("call learner: %v", err)
+	}
+	learner.Flush()
+
+	if len(store.saves) == 0 {
+		t.Fatal("learned state should be saved")
+	}
+	last := store.saves[len(store.saves)-1]
+	if last.Quality.Arms["a"].Updates <= 0 {
+		t.Fatalf("saved quality updates got %v", last.Quality.Arms["a"].Updates)
+	}
+}
+
 func TestLearnerStreamsThroughGatewayAndPersistsState(t *testing.T) {
 	bandit := control.NewBanditRouter(control.BanditConfig{
 		Policy:   control.NewPolicy(control.PolicyConfig{}),

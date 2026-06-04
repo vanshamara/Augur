@@ -18,7 +18,7 @@ func NewQualityModel(config LinearConfig) *QualityModel {
 }
 
 func (q *QualityModel) Update(observation LinearObservation) {
-	observation.Value = clamp01(observation.Value)
+	observation.Value = scaledQualityValue(clamp01(observation.Value), observation.Features)
 	q.model.Update(observation)
 }
 
@@ -46,4 +46,17 @@ func (q *QualityModel) Flush() {
 
 func (q *QualityModel) Close() {
 	q.model.Close()
+}
+
+func scaledQualityValue(value float64, features []float64) float64 {
+	active := 0
+	for _, feature := range features {
+		if feature != 0 {
+			active++
+		}
+	}
+	if active <= 1 {
+		return value
+	}
+	return value / float64(active)
 }

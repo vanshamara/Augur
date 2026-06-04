@@ -1,9 +1,11 @@
 package control
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/vanshamara/Augur/internal/clock"
 	"github.com/vanshamara/Augur/internal/core"
 )
 
@@ -31,6 +33,79 @@ func TestPolicyRewardKeepsConstraintsOutOfReward(t *testing.T) {
 	resp.Errored = true
 	if got := policy.Reward(resp); got != BadOutcomeReward {
 		t.Fatalf("bad outcomes should hit the hard floor, got %v", got)
+	}
+}
+
+func TestBlendObjectiveBalancesLatencyAndCostInMillionths(t *testing.T) {
+	policy := NewPolicy(PolicyConfig{
+		Objective: ObjectiveConfig{
+			Type:          BlendObjective,
+			LatencyWeight: 0.1,
+			CostWeight:    1,
+		},
+	})
+
+	resp := core.Response{Outcome: core.Outcome{LatencyMs: 1000, CostUSD: 0.0001}}
+	if got := policy.ObjectiveCost(resp); got != 200 {
+		t.Fatalf("objective cost got %v", got)
+	}
+}
+
+func TestQualityGateCanPreferHigherQualityOverLowerCost(t *testing.T) {
+	policy := NewPolicy(PolicyConfig{
+		Constraints: ConstraintConfig{
+			MinQuality: 0.85,
+		},
+		Objective: ObjectiveConfig{
+			Type:          BlendObjective,
+			LatencyWeight: 0.1,
+			CostWeight:    1,
+		},
+		Exploration: ExplorationConfig{
+			ColdStartBudget: 0,
+		},
+	})
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewVirtual(start)
+	bandit := NewBanditRouter(BanditConfig{
+		Policy:   policy,
+		Backends: []core.BackendID{"cheap", "strong"},
+		Clock:    clk,
+	})
+	defer bandit.Close()
+
+	req := core.Request{
+		ID: "req-1",
+		Features: core.Features{
+			PromptTokens:    1200,
+			Type:            core.Reasoning,
+			LatencyBudgetMs: 3000,
+			CostBudget:      0.08,
+			UserTier:        "premium",
+		},
+	}
+	features := EncodeFeatures(req)
+	for i := 0; i < 40; i++ {
+		bandit.QualityModel().Update(LinearObservation{
+			Backend:  "cheap",
+			Features: features,
+			Value:    0.20,
+			Weight:   1,
+			At:       start,
+		})
+		bandit.QualityModel().Update(LinearObservation{
+			Backend:  "strong",
+			Features: features,
+			Value:    0.95,
+			Weight:   1,
+			At:       start,
+		})
+	}
+	bandit.QualityModel().Flush()
+
+	got := bandit.Pick(context.Background(), req, []core.BackendID{"cheap", "strong"})
+	if got != "strong" {
+		t.Fatalf("quality floor should keep cheap out, got %s", got)
 	}
 }
 

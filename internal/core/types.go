@@ -7,6 +7,7 @@ type RequestType string
 const (
 	Chat      RequestType = "chat"
 	Reasoning RequestType = "reasoning"
+	Coding    RequestType = "coding"
 	Embedding RequestType = "embedding"
 )
 
