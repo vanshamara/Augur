@@ -30,6 +30,40 @@ type Observer struct {
 	rewardValue  metric.Float64Histogram
 }
 
+type DecisionRecord struct {
+	RequestID         string
+	TenantID          string
+	RouteName         string
+	RequestType       core.RequestType
+	PromptTokens      int
+	LatencyBudgetMs   int
+	CostBudgetUSD     float64
+	Candidates        []core.BackendID
+	Excluded          []DecisionExclusion
+	ReasonSummary     string
+	Canary            DecisionCanary
+	Selected          core.BackendID
+	AttemptedBackends []core.BackendID
+	FallbackCount     int
+	EstimatedCostUSD  float64
+	Error             string
+}
+
+type DecisionExclusion struct {
+	Backend core.BackendID
+	Stage   string
+	Reason  string
+}
+
+type DecisionCanary struct {
+	Configured     bool
+	Assigned       bool
+	Mode           string
+	Backend        core.BackendID
+	StickyKeyHash  string
+	RollbackReason string
+}
+
 func New(config Config) *Observer {
 	if config.Name == "" {
 		config.Name = "augur"
@@ -106,6 +140,13 @@ func (o *Observer) RecordResponse(ctx context.Context, resp core.Response, err e
 	}
 }
 
+func (o *Observer) RecordDecision(ctx context.Context, record DecisionRecord) {
+	if o == nil {
+		return
+	}
+	trace.SpanFromContext(ctx).AddEvent("route.decision", trace.WithAttributes(decisionAttrs(record)...))
+}
+
 func (o *Observer) RecordReward(ctx context.Context, requestID string, backend core.BackendID, reward float64) {
 	if o == nil {
 		return
@@ -141,6 +182,82 @@ func responseAttrs(resp core.Response) []attribute.KeyValue {
 		attribute.String("canary.rollback_reason", resp.CanaryRollback),
 		attribute.Bool("response.errored", resp.Errored),
 	}
+}
+
+func decisionAttrs(record DecisionRecord) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("request.id", record.RequestID),
+		attribute.String("route.name", record.RouteName),
+		attribute.String("request.type", string(record.RequestType)),
+		attribute.Int("prompt.tokens", record.PromptTokens),
+		attribute.StringSlice("candidate.ids", backendIDStrings(record.Candidates)),
+		attribute.Bool("canary.configured", record.Canary.Configured),
+		attribute.Bool("canary.assigned", record.Canary.Assigned),
+	}
+	if record.TenantID != "" {
+		attrs = append(attrs, attribute.String("tenant.id", record.TenantID))
+	}
+	if record.LatencyBudgetMs > 0 {
+		attrs = append(attrs, attribute.Int("latency.budget_ms", record.LatencyBudgetMs))
+	}
+	if record.CostBudgetUSD > 0 {
+		attrs = append(attrs, attribute.Float64("cost.budget_usd", record.CostBudgetUSD))
+	}
+	if len(record.Excluded) > 0 {
+		attrs = append(attrs, attribute.StringSlice("excluded.backends", exclusionStrings(record.Excluded)))
+	}
+	if record.ReasonSummary != "" {
+		attrs = append(attrs, attribute.String("route.reason_summary", record.ReasonSummary))
+	}
+	if record.Selected != "" {
+		attrs = append(attrs, attribute.String("backend.selected", string(record.Selected)))
+	}
+	if len(record.AttemptedBackends) > 0 {
+		attrs = append(attrs, attribute.StringSlice("backend.attempted", backendIDStrings(record.AttemptedBackends)))
+	}
+	if record.FallbackCount > 0 {
+		attrs = append(attrs, attribute.Int("fallback.count", record.FallbackCount))
+	}
+	if record.EstimatedCostUSD > 0 {
+		attrs = append(attrs, attribute.Float64("cost.estimated_usd", record.EstimatedCostUSD))
+	}
+	if record.Error != "" {
+		attrs = append(attrs, attribute.String("error.message", record.Error))
+	}
+	return append(attrs, canaryDecisionAttrs(record.Canary)...)
+}
+
+func canaryDecisionAttrs(canary DecisionCanary) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{}
+	if canary.Mode != "" {
+		attrs = append(attrs, attribute.String("canary.mode", canary.Mode))
+	}
+	if canary.Backend != "" {
+		attrs = append(attrs, attribute.String("canary.backend", string(canary.Backend)))
+	}
+	if canary.StickyKeyHash != "" {
+		attrs = append(attrs, attribute.String("canary.sticky_key_hash", canary.StickyKeyHash))
+	}
+	if canary.RollbackReason != "" {
+		attrs = append(attrs, attribute.String("canary.rollback_reason", canary.RollbackReason))
+	}
+	return attrs
+}
+
+func backendIDStrings(values []core.BackendID) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value))
+	}
+	return out
+}
+
+func exclusionStrings(values []DecisionExclusion) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		out = append(out, string(value.Backend)+":"+value.Stage+":"+value.Reason)
+	}
+	return out
 }
 
 func recordError(ctx context.Context, err error, resp core.Response) {

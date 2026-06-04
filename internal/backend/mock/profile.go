@@ -3,6 +3,8 @@ package mock
 import (
 	"math"
 	"time"
+
+	"github.com/vanshamara/Augur/internal/core"
 )
 
 // Params are the true generative parameters of a backend at a point in time.
@@ -18,14 +20,23 @@ type Params struct {
 
 // Profile defines how a backend behaves and how that behavior drifts over time.
 type Profile struct {
-	Name     string
-	paramsAt func(elapsed time.Duration) Params
+	Name      string
+	paramsAt  func(elapsed time.Duration) Params
+	paramsFor func(elapsed time.Duration, req core.Request) Params
 }
 
 // ParamsAt returns the true parameters after the given time has passed since the
 // backend started.
 func (p Profile) ParamsAt(elapsed time.Duration) Params {
 	return p.paramsAt(elapsed)
+}
+
+// ParamsFor returns the true parameters for one request shape.
+func (p Profile) ParamsFor(elapsed time.Duration, req core.Request) Params {
+	if p.paramsFor != nil {
+		return p.paramsFor(elapsed, req)
+	}
+	return p.ParamsAt(elapsed)
 }
 
 // CheapLowerQuality is cheap and fast enough but gives weaker answers.
@@ -85,6 +96,47 @@ func ColdStart() Profile {
 	}}
 }
 
+func CheapChatSpecialist() Profile {
+	chat := Params{MeanLatencyMs: 220, LatencySpread: 0.12, ErrorRate: 0.01, Quality: 0.88, CostPerToken: 0.0000010}
+	hard := Params{MeanLatencyMs: 1800, LatencySpread: 0.15, ErrorRate: 0.02, Quality: 0.86, CostPerToken: 0.0000010}
+	return requestAware("cheap-chat-specialist", chat, func(req core.Request) Params {
+		switch req.Features.Type {
+		case core.Reasoning, core.Coding:
+			return hard
+		default:
+			return chat
+		}
+	})
+}
+
+func BalancedGeneralist() Profile {
+	base := Params{MeanLatencyMs: 1100, LatencySpread: 0.10, ErrorRate: 0.01, Quality: 0.90, CostPerToken: 0.0000040}
+	return steady("balanced-generalist", base)
+}
+
+func StrongReasoningSpecialist() Profile {
+	chat := Params{MeanLatencyMs: 1400, LatencySpread: 0.12, ErrorRate: 0.006, Quality: 0.92, CostPerToken: 0.0000080}
+	hard := Params{MeanLatencyMs: 260, LatencySpread: 0.10, ErrorRate: 0.004, Quality: 0.96, CostPerToken: 0.0000080}
+	return requestAware("strong-reasoning-specialist", chat, func(req core.Request) Params {
+		switch req.Features.Type {
+		case core.Reasoning, core.Coding:
+			return hard
+		default:
+			return chat
+		}
+	})
+}
+
 func steady(name string, base Params) Profile {
 	return Profile{Name: name, paramsAt: func(time.Duration) Params { return base }}
+}
+
+func requestAware(name string, fallback Params, paramsFor func(core.Request) Params) Profile {
+	return Profile{
+		Name:     name,
+		paramsAt: func(time.Duration) Params { return fallback },
+		paramsFor: func(elapsed time.Duration, req core.Request) Params {
+			return paramsFor(req)
+		},
+	}
 }

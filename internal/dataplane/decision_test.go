@@ -6,8 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/vanshamara/Augur/internal/backend"
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/router"
 )
 
@@ -316,6 +321,40 @@ func TestDecisionLogDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestGatewayEmitsDecisionEventWhenLogDisabled(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	traces := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	observer := observability.New(observability.Config{
+		Name:           "test",
+		TracerProvider: traces,
+	})
+	model := instantBackend("a")
+	gateway, err := New(Config{
+		Router:   router.NewStatic("a"),
+		Backends: []backend.Backend{model},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"a"},
+			},
+		},
+		Observer: observer,
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	if _, err := gateway.Call(context.Background(), core.Request{ID: "req-observed"}); err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if records := gateway.DecisionRecords(); records != nil {
+		t.Fatalf("expected no debug records when disabled, got %v", records)
+	}
+	if !spansHaveEventString(recorder.Ended(), "route.decision", "route.reason_summary", "Selected a.") {
+		t.Fatalf("expected decision event with reason summary, got %v spans", len(recorder.Ended()))
+	}
+}
+
 func TestDecisionLogEvictsOldestRecord(t *testing.T) {
 	log := NewDecisionLog(2)
 	log.put(&RouteDecisionRecord{RequestID: "a"})
@@ -354,6 +393,26 @@ func TestDecisionLogUpdatesDuplicateRequestIDInPlace(t *testing.T) {
 func hasExclusion(record RouteDecisionRecord, backend core.BackendID, stage string) bool {
 	for _, exclusion := range record.Excluded {
 		if exclusion.Backend == backend && exclusion.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func spansHaveEventString(spans []sdktrace.ReadOnlySpan, eventName string, key string, value string) bool {
+	for _, span := range spans {
+		for _, event := range span.Events() {
+			if event.Name == eventName && attrsHaveString(event.Attributes, key, value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func attrsHaveString(attrs []attribute.KeyValue, key string, value string) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == key && attr.Value.AsString() == value {
 			return true
 		}
 	}

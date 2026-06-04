@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/observability"
 )
 
 // RouteDecisionRecord explains one routing decision after the fact. It holds the
@@ -181,6 +182,50 @@ func (r RouteDecisionRecord) clone() RouteDecisionRecord {
 	r.Excluded = append([]ExclusionRecord(nil), r.Excluded...)
 	r.AttemptedBackends = append([]core.BackendID(nil), r.AttemptedBackends...)
 	return r
+}
+
+func (r RouteDecisionRecord) observabilityRecord() observability.DecisionRecord {
+	return observability.DecisionRecord{
+		RequestID:         r.RequestID,
+		TenantID:          r.TenantID,
+		RouteName:         r.RouteName,
+		RequestType:       r.RequestType,
+		PromptTokens:      r.PromptTokens,
+		LatencyBudgetMs:   r.LatencyBudgetMs,
+		CostBudgetUSD:     r.CostBudgetUSD,
+		Candidates:        append([]core.BackendID(nil), r.Candidates...),
+		Excluded:          observabilityExclusions(r.Excluded),
+		ReasonSummary:     r.ReasonSummary,
+		Canary:            observabilityCanary(r.Canary),
+		Selected:          r.Selected,
+		AttemptedBackends: append([]core.BackendID(nil), r.AttemptedBackends...),
+		FallbackCount:     r.FallbackCount,
+		EstimatedCostUSD:  r.EstimatedCostUSD,
+		Error:             r.Error,
+	}
+}
+
+func observabilityExclusions(values []ExclusionRecord) []observability.DecisionExclusion {
+	out := make([]observability.DecisionExclusion, 0, len(values))
+	for _, value := range values {
+		out = append(out, observability.DecisionExclusion{
+			Backend: value.Backend,
+			Stage:   value.Stage,
+			Reason:  value.Reason,
+		})
+	}
+	return out
+}
+
+func observabilityCanary(value CanaryRecord) observability.DecisionCanary {
+	return observability.DecisionCanary{
+		Configured:     value.Configured,
+		Assigned:       value.Assigned,
+		Mode:           value.Mode,
+		Backend:        value.Backend,
+		StickyKeyHash:  value.StickyKeyHash,
+		RollbackReason: value.RollbackReason,
+	}
 }
 
 func (r RouteDecisionRecord) reasonSummary() string {

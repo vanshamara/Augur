@@ -26,12 +26,11 @@ func NewOracle(backends []*mock.Backend) *Oracle {
 	return &Oracle{backends: backends, byID: byID}
 }
 
-// ExpectedBestLatency returns the lowest true mean latency across backends at the
-// given time.
-func (o *Oracle) ExpectedBestLatency(at time.Time) float64 {
+// ExpectedBestLatency returns the lowest true mean latency for one request.
+func (o *Oracle) ExpectedBestLatency(req core.Request, at time.Time) float64 {
 	best := math.Inf(1)
 	for _, b := range o.backends {
-		mean := b.TrueParams(at).MeanLatencyMs
+		mean := b.TrueParamsFor(req, at).MeanLatencyMs
 		if mean < best {
 			best = mean
 		}
@@ -70,7 +69,7 @@ func (o *Oracle) PolicyRegret(req core.Request, choice core.BackendID, at time.T
 		return PolicyRegret{ViolatedConstraint: true}
 	}
 
-	chosenParams := chosen.TrueParams(at)
+	chosenParams := chosen.TrueParamsFor(req, at)
 	chosenFeasible := trueFeasible(chosenParams, policy.Config().Constraints)
 	oracleObjective, comparable := o.bestExpectedObjective(req, at, policy)
 	if !comparable {
@@ -106,7 +105,7 @@ func (o *Oracle) bestExpectedObjective(req core.Request, at time.Time, policy *c
 	found := false
 
 	for _, backend := range o.backends {
-		params := backend.TrueParams(at)
+		params := backend.TrueParamsFor(req, at)
 		if !trueFeasible(params, constraints) {
 			continue
 		}
@@ -125,7 +124,7 @@ func (o *Oracle) bestExpectedObjective(req core.Request, at time.Time, policy *c
 	}
 
 	for _, backend := range o.backends {
-		objective := expectedObjective(req, backend.TrueParams(at), policy)
+		objective := expectedObjective(req, backend.TrueParamsFor(req, at), policy)
 		if objective < best {
 			best = objective
 			found = true

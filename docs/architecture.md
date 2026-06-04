@@ -66,6 +66,7 @@ attribution, rollback helpers, and distributed learning simulation.
 - hedging
 - single flight
 - backend debug status for health, circuit mode, P95 latency, and error rate
+- route decision records for debug lookup and OpenTelemetry span events
 
 `internal/harness` runs deterministic replay against mock backends. It is used
 for policy comparison and regression tests.

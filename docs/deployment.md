@@ -163,6 +163,11 @@ a hashed canary sticky key, never prompt text or API keys. Each record includes
 `reason_summary`, which gives a short explanation of the selected backend,
 excluded backends, fallback attempts, canary rollback, or final error.
 
+Augur records the same finished decision summary on the active OpenTelemetry
+span as `route.decision`. This helps trace a request across replicas when an
+OpenTelemetry pipeline is installed. Without that pipeline, the event is a
+no-op and `/debug/decisions` remains per process.
+
 ## Auth
 
 Gateway auth is disabled unless `AUGUR_GATEWAY_API_KEYS` is set. Set it for any

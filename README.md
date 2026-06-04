@@ -344,6 +344,9 @@ Example fields:
 }
 ```
 
+Augur also emits the finished decision summary as an OpenTelemetry span event
+named `route.decision` when tracing is configured.
+
 ## Config
 
 Public examples are in `configs/`:

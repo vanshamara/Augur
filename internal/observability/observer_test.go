@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -35,6 +36,15 @@ func TestObserverRecordsSpansAndMetrics(t *testing.T) {
 	}
 	observer.RecordRoute(ctx, "policy", "bandit", "req-1", "model-a", 2)
 	observer.RecordResponse(ctx, resp, nil)
+	observer.RecordDecision(ctx, DecisionRecord{
+		RequestID:     "req-1",
+		RouteName:     "default",
+		RequestType:   core.Chat,
+		PromptTokens:  12,
+		Candidates:    []core.BackendID{"model-a", "model-b"},
+		ReasonSummary: "Selected model-a.",
+		Selected:      "model-a",
+	})
 	observer.RecordReward(ctx, "req-1", "model-a", -50)
 	observer.RecordQuality(ctx, "req-1", "model-a", 0.9)
 	span.End()
@@ -45,6 +55,13 @@ func TestObserverRecordsSpansAndMetrics(t *testing.T) {
 	events := recorder.Ended()[0].Events()
 	if len(events) < 3 {
 		t.Fatalf("expected route, reward, and quality events, got %d", len(events))
+	}
+	decision, ok := eventByName(events, "route.decision")
+	if !ok {
+		t.Fatal("missing decision event")
+	}
+	if !eventHasString(decision.Attributes, "route.reason_summary", "Selected model-a.") {
+		t.Fatalf("decision event did not include reason summary: %v", decision.Attributes)
 	}
 
 	var data metricdata.ResourceMetrics
@@ -57,6 +74,24 @@ func TestObserverRecordsSpansAndMetrics(t *testing.T) {
 			t.Fatalf("missing metric %s in %v", name, names)
 		}
 	}
+}
+
+func eventByName(events []sdktrace.Event, name string) (sdktrace.Event, bool) {
+	for _, event := range events {
+		if event.Name == name {
+			return event, true
+		}
+	}
+	return sdktrace.Event{}, false
+}
+
+func eventHasString(attrs []attribute.KeyValue, key string, value string) bool {
+	for _, attr := range attrs {
+		if string(attr.Key) == key && attr.Value.AsString() == value {
+			return true
+		}
+	}
+	return false
 }
 
 func metricNames(data metricdata.ResourceMetrics) map[string]bool {

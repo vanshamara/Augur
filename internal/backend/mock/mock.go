@@ -36,6 +36,11 @@ func (b *Backend) TrueParams(at time.Time) Params {
 	return b.profile.ParamsAt(at.Sub(b.start))
 }
 
+// TrueParamsFor returns the backend's true parameters for one request shape.
+func (b *Backend) TrueParamsFor(req core.Request, at time.Time) Params {
+	return b.profile.ParamsFor(at.Sub(b.start), req)
+}
+
 // CostPerToken is the published price the gateway can see ahead of time. It does not
 // change over time in any profile, so the cost aware router can rely on it.
 func (b *Backend) CostPerToken() float64 {
@@ -46,7 +51,7 @@ func (b *Backend) CostPerToken() float64 {
 // given time. The same inputs always give the same outcome, so two callers asking
 // the same question get the same answer.
 func (b *Backend) Outcome(req core.Request, at time.Time) core.Outcome {
-	params := b.TrueParams(at)
+	params := b.TrueParamsFor(req, at)
 	generator := b.deriver.Rand(rng.HashKey(string(b.id)), rng.HashKey(req.ID))
 
 	latencyFactor := 1 + params.LatencySpread*(2*generator.Float64()-1)

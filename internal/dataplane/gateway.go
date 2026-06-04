@@ -200,17 +200,17 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	candidates := g.candidates(req)
 	record := candidates.Record
 	if candidates.Err != nil {
-		g.storeDecision(record, core.Response{}, candidates.Err)
+		g.storeDecision(ctx, record, core.Response{}, candidates.Err)
 		return nil, candidates.Err
 	}
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
-		g.storeDecision(record, core.Response{}, ErrNoCandidates)
+		g.storeDecision(ctx, record, core.Response{}, ErrNoCandidates)
 		return nil, ErrNoCandidates
 	}
 	g.startShadow(ctx, req, candidates)
 	if len(candidates.Fallbacks) > 0 {
 		stream, err := g.streamWithFallbacks(ctx, req, candidates)
-		g.storeStreamDecision(record, stream, err)
+		g.storeStreamDecision(ctx, record, stream, err)
 		return stream, err
 	}
 
@@ -219,20 +219,20 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
-			g.storeDecision(record, core.Response{}, ErrNoCandidates)
+			g.storeDecision(ctx, record, core.Response{}, ErrNoCandidates)
 			return nil, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
 		attempts = append(attempts, choice)
 		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName, candidates.Canary, attempts, 0)
 		if !errors.Is(err, ErrLoadShed) {
-			g.storeStreamDecision(record, stream, err)
+			g.storeStreamDecision(ctx, record, stream, err)
 			return stream, err
 		}
 		remaining = without(remaining, choice)
 	}
 	err := newAttemptError(ErrLoadShed, attempts, 0)
-	g.storeDecision(record, core.Response{}, err)
+	g.storeDecision(ctx, record, core.Response{}, err)
 	return nil, err
 }
 
@@ -240,16 +240,16 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 	candidates := g.candidates(req)
 	record := candidates.Record
 	if candidates.Err != nil {
-		g.storeDecision(record, core.Response{}, candidates.Err)
+		g.storeDecision(ctx, record, core.Response{}, candidates.Err)
 		return core.Response{}, candidates.Err
 	}
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
-		g.storeDecision(record, core.Response{}, ErrNoCandidates)
+		g.storeDecision(ctx, record, core.Response{}, ErrNoCandidates)
 		return core.Response{}, ErrNoCandidates
 	}
 	g.startShadow(ctx, req, candidates)
 	resp, err := g.dispatch(ctx, req, candidates)
-	g.storeDecision(record, resp, err)
+	g.storeDecision(ctx, record, resp, err)
 	return resp, err
 }
 
@@ -330,9 +330,6 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 }
 
 func (g *Gateway) newDecisionRecord(req core.Request, decision RouteDecision) *RouteDecisionRecord {
-	if g.decisions == nil {
-		return nil
-	}
 	return &RouteDecisionRecord{
 		RequestID:       req.ID,
 		TenantID:        req.TenantID,
@@ -359,15 +356,18 @@ func (g *Gateway) recordCanary(record *RouteDecisionRecord, req core.Request, ru
 	}
 }
 
-func (g *Gateway) storeDecision(record *RouteDecisionRecord, resp core.Response, err error) {
+func (g *Gateway) storeDecision(ctx context.Context, record *RouteDecisionRecord, resp core.Response, err error) {
 	if record == nil {
 		return
 	}
 	record.finish(resp, err)
-	g.decisions.put(record)
+	if g.decisions != nil {
+		g.decisions.put(record)
+	}
+	g.observer.RecordDecision(ctx, record.observabilityRecord())
 }
 
-func (g *Gateway) storeStreamDecision(record *RouteDecisionRecord, stream core.Stream, err error) {
+func (g *Gateway) storeStreamDecision(ctx context.Context, record *RouteDecisionRecord, stream core.Stream, err error) {
 	if record == nil {
 		return
 	}
@@ -383,7 +383,10 @@ func (g *Gateway) storeStreamDecision(record *RouteDecisionRecord, stream core.S
 		}
 	}
 	record.finish(resp, err)
-	g.decisions.put(record)
+	if g.decisions != nil {
+		g.decisions.put(record)
+	}
+	g.observer.RecordDecision(ctx, record.observabilityRecord())
 }
 
 // DecisionRecords returns recent routing decisions for the debug endpoint.

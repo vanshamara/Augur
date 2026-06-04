@@ -77,7 +77,7 @@ func TestOracleSingleBackend(t *testing.T) {
 	only := mock.New("only", mock.SlowStable(), start, rng.NewDeriver(1), clk)
 	oracle := NewOracle([]*mock.Backend{only})
 	req := core.Request{ID: "req-1", Features: core.Features{PromptTokens: 100, Type: core.Chat}}
-	if oracle.ExpectedBestLatency(start) != only.TrueParams(start).MeanLatencyMs {
+	if oracle.ExpectedBestLatency(req, start) != only.TrueParamsFor(req, start).MeanLatencyMs {
 		t.Fatal("with one backend the expected best should equal its true mean")
 	}
 	if oracle.RealizedBestLatency(req, start) != only.Outcome(req, start).LatencyMs {

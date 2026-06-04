@@ -69,6 +69,9 @@ func Run(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.
 }
 
 func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, clk *clock.Virtual, policy *control.Policy) Report {
+	routerName := route.Name()
+	defer closeRouter(route)
+
 	byID := make(map[core.BackendID]*mock.Backend, len(backends))
 	ids := make([]core.BackendID, 0, len(backends))
 	for _, b := range backends {
@@ -97,7 +100,7 @@ func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, c
 				rec.record(sample{
 					backend:                     choice,
 					errored:                     true,
-					expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.at),
+					expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.req, current.at),
 					realizedBestLatencyMs:       oracle.RealizedBestLatency(current.req, current.at),
 					violatedConstraint:          true,
 					comparableObjectiveDecision: false,
@@ -111,9 +114,9 @@ func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, c
 				backend:                     choice,
 				latencyMs:                   outcome.LatencyMs,
 				costUSD:                     outcome.CostUSD,
-				quality:                     chosen.TrueParams(current.at).Quality,
+				quality:                     chosen.TrueParamsFor(current.req, current.at).Quality,
 				errored:                     outcome.Errored,
-				expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.at),
+				expectedBestLatencyMs:       oracle.ExpectedBestLatency(current.req, current.at),
 				realizedBestLatencyMs:       oracle.RealizedBestLatency(current.req, current.at),
 				objectiveRegret:             policyRegret.ObjectiveRegret,
 				learningCost:                policyRegret.LearningCost,
@@ -131,15 +134,30 @@ func RunWithPolicy(trace Trace, route router.Router, backends []*mock.Backend, c
 			})
 		case kindCompletion:
 			route.Observe(context.Background(), current.choice, current.resp)
+			flushRouter(route)
 		}
 	}
 
-	return rec.report(route.Name())
+	return rec.report(routerName)
 }
 
 func advanceTo(clk *clock.Virtual, t time.Time) {
 	delta := t.Sub(clk.Now())
 	if delta > 0 {
 		clk.Advance(delta)
+	}
+}
+
+func flushRouter(route router.Router) {
+	flusher, ok := route.(interface{ Flush() })
+	if ok {
+		flusher.Flush()
+	}
+}
+
+func closeRouter(route router.Router) {
+	closer, ok := route.(interface{ Close() })
+	if ok {
+		closer.Close()
 	}
 }

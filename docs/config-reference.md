@@ -238,6 +238,10 @@ or final error.
 specific request went where it did. Both follow the same auth settings as
 `/v1/chat/completions`. The default `size` is 256 when the log is enabled.
 
+Augur also emits the same finished decision summary as an OpenTelemetry span
+event named `route.decision`. The debug log controls only the in-memory lookup
+endpoint. Without an OpenTelemetry pipeline, this event is a no-op.
+
 Example:
 
 ```json

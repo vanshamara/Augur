@@ -26,6 +26,7 @@ func TestCompareCoversEveryRouter(t *testing.T) {
 		"least-loaded":        false,
 		"ewma":                false,
 		"cost-aware":          false,
+		"bandit":              false,
 	}
 	for _, r := range c.Routers {
 		want[r.Router] = true
@@ -34,6 +35,26 @@ func TestCompareCoversEveryRouter(t *testing.T) {
 		if !seen {
 			t.Fatalf("router %s missing from the comparison", name)
 		}
+	}
+}
+
+func TestBanditLearnsRequestShapeRegime(t *testing.T) {
+	seeds := []uint64{1, 2, 3, 4, 5}
+	comparison := Compare(RequestShapeRegime(), BaselineFactories(), seeds, 1200, start)
+	stats := routerStatsByName(comparison)
+
+	bandit := stats["bandit"]
+	costAware := stats["cost-aware"]
+	ewma := stats["ewma"]
+
+	if bandit.ObjectiveRegretFeasible.Mean >= costAware.ObjectiveRegretFeasible.Mean {
+		t.Fatalf("bandit should beat cost-aware objective regret in request-shape regime: bandit=%v cost-aware=%v", bandit.ObjectiveRegretFeasible, costAware.ObjectiveRegretFeasible)
+	}
+	if bandit.ObjectiveRegretFeasible.Mean >= ewma.ObjectiveRegretFeasible.Mean {
+		t.Fatalf("bandit should beat ewma objective regret in request-shape regime: bandit=%v ewma=%v", bandit.ObjectiveRegretFeasible, ewma.ObjectiveRegretFeasible)
+	}
+	if bandit.P95.Mean >= costAware.P95.Mean {
+		t.Fatalf("bandit should beat cost-aware p95 in request-shape regime: bandit=%v cost-aware=%v", bandit.P95, costAware.P95)
 	}
 }
 
@@ -46,4 +67,12 @@ func TestReferenceHasZeroDiffAgainstItself(t *testing.T) {
 			}
 		}
 	}
+}
+
+func routerStatsByName(comparison RegimeComparison) map[string]RouterStats {
+	out := make(map[string]RouterStats, len(comparison.Routers))
+	for _, stats := range comparison.Routers {
+		out[stats.Router] = stats
+	}
+	return out
 }

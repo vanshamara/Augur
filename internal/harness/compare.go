@@ -7,27 +7,51 @@ import (
 
 	"github.com/vanshamara/Augur/internal/backend/mock"
 	"github.com/vanshamara/Augur/internal/clock"
+	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/router"
 )
 
 // RouterFactory builds a fresh router for one run. Routers carry state, so each run
 // needs its own.
-type RouterFactory func(backends []*mock.Backend) router.Router
+type RouterFactory func(backends []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router
 
 const BaselineScopeNote = "scope: LiteLLM and Envoy rows are local router shims over the same mock backends. " +
 	"They do not measure proxy overhead, retries, provider integrations, streaming, auth, caching, or Redis rate-limit behavior."
 
-// BaselineFactories returns the baseline routers in a fixed order. Static aims
-// at the first backend in the set.
+// BaselineFactories returns routers in a fixed comparison order.
 func BaselineFactories() []RouterFactory {
 	return []RouterFactory{
-		func(b []*mock.Backend) router.Router { return router.NewStatic(idsOf(b)[0]) },
-		func(b []*mock.Backend) router.Router { return router.NewRoundRobin() },
-		func(b []*mock.Backend) router.Router { return router.NewLiteLLMShuffle(nil, 7001) },
-		func(b []*mock.Backend) router.Router { return router.NewEnvoyLeastRequest(idsOf(b), nil, 8001) },
-		func(b []*mock.Backend) router.Router { return router.NewLeastLoaded(idsOf(b)) },
-		func(b []*mock.Backend) router.Router { return router.NewEWMA(idsOf(b), 0.2) },
-		func(b []*mock.Backend) router.Router { return router.NewCostAware(pricesOf(b)) },
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewStatic(idsOf(b)[0])
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewRoundRobin()
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewLiteLLMShuffle(nil, 7001)
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewEnvoyLeastRequest(idsOf(b), nil, 8001)
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewLeastLoaded(idsOf(b))
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewEWMA(idsOf(b), 0.2)
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return router.NewCostAware(pricesOf(b))
+		},
+		func(b []*mock.Backend, clk clock.Clock, policy *control.Policy) router.Router {
+			return control.NewBanditRouter(control.BanditConfig{
+				Policy:         policy,
+				Backends:       idsOf(b),
+				Clock:          clk,
+				Seed:           9001,
+				Tau:            30 * time.Minute,
+				PriorPrecision: 5,
+			})
+		},
 	}
 }
 
@@ -72,11 +96,12 @@ func Compare(regime Regime, factories []RouterFactory, seeds []uint64, requests 
 	learningCost := make([][]float64, len(factories))
 
 	for _, seed := range seeds {
-		trace := GenerateTrace(seed, requests, start)
+		trace := traceForRegime(regime, seed, requests, start)
+		policy := policyForRegime(regime)
 		for fi, factory := range factories {
 			clk := clock.NewVirtual(start)
 			backends := regime.Build(seed, clk, start)
-			report := Run(trace, factory(backends), backends, clk)
+			report := RunWithPolicy(trace, factory(backends, clk, policy), backends, clk, policy)
 			names[fi] = report.Router
 			p95[fi] = append(p95[fi], report.LatencyP95)
 			p99[fi] = append(p99[fi], report.LatencyP99)
