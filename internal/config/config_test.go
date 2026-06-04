@@ -700,6 +700,23 @@ func TestParseRejectsNegativePricingTablePrice(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNegativeDecisionLogSize(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"decision_log":{"size":-1}}}`))
+	if err == nil {
+		t.Fatal("negative decision log size should fail")
+	}
+}
+
+func TestParseDefaultsDecisionLogSizeWhenEnabled(t *testing.T) {
+	app, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"decision_log":{"enabled":true}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if app.DataPlane.DecisionLog.Size != DefaultDecisionLogSize {
+		t.Fatalf("decision log size got %d", app.DataPlane.DecisionLog.Size)
+	}
+}
+
 func TestParseRejectsMissingJudgeModel(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true}}}`))
 	if err == nil {

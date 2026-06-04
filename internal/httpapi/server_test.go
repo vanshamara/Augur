@@ -876,6 +876,79 @@ func TestBackendDebugReturnsStatus(t *testing.T) {
 	}
 }
 
+func TestDecisionDebugReturnsRecordByRequestID(t *testing.T) {
+	record := dataplane.RouteDecisionRecord{
+		RequestID: "req-1",
+		RouteName: "default",
+		Selected:  "fast",
+		Excluded: []dataplane.ExclusionRecord{
+			{Backend: "slow", Stage: "budget", Reason: "estimated cost over budget"},
+		},
+	}
+	server, err := New(Config{
+		Gateway: &fakeGateway{},
+		Decision: func(requestID string) (dataplane.RouteDecisionRecord, bool) {
+			if requestID == "req-1" {
+				return record, true
+			}
+			return dataplane.RouteDecisionRecord{}, false
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/debug/decisions?request_id=req-1", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	var got dataplane.RouteDecisionRecord
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if got.RequestID != "req-1" || got.Selected != "fast" {
+		t.Fatalf("decision body got %+v", got)
+	}
+	if len(got.Excluded) != 1 || got.Excluded[0].Backend != "slow" {
+		t.Fatalf("exclusions got %+v", got.Excluded)
+	}
+}
+
+func TestDecisionDebugReturnsNotFoundForUnknownRequest(t *testing.T) {
+	server, err := New(Config{
+		Gateway: &fakeGateway{},
+		Decision: func(string) (dataplane.RouteDecisionRecord, bool) {
+			return dataplane.RouteDecisionRecord{}, false
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/debug/decisions?request_id=missing", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDecisionDebugRequiresAuthWhenEnabled(t *testing.T) {
+	server := testServerWithAuth(t, &fakeGateway{}, []string{"client-key"})
+	req := httptest.NewRequest(http.MethodGet, "/debug/decisions", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBackendDebugRequiresAuthWhenEnabled(t *testing.T) {
 	server := testServerWithAuth(t, &fakeGateway{}, []string{"client-key"})
 	req := httptest.NewRequest(http.MethodGet, "/debug/backends", nil)

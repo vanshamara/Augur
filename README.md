@@ -27,6 +27,7 @@ Built or mostly built:
 - deterministic canary percentage rollout and shadow mode
 - active health checks, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - backend debug output for health, circuit state, latency window, and error rate
+- optional route-decision debug log that explains candidate filtering per request
 - OpenAI-compatible backend adapter
 - streaming responses
 - optional gateway auth

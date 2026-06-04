@@ -43,6 +43,7 @@ type Config struct {
 	Capabilities    map[core.BackendID][]core.RequestType
 	Canary          CanaryConfig
 	Pricing         map[core.BackendID]BackendPrice
+	Decisions       *DecisionLog
 	BackendTimeouts map[core.BackendID]time.Duration
 	ActiveHealth    bool
 	Filters         []Filter
@@ -61,6 +62,7 @@ type Gateway struct {
 	capabilities    map[core.BackendID]map[core.RequestType]bool
 	canaries        *CanaryTable
 	pricing         map[core.BackendID]BackendPrice
+	decisions       *DecisionLog
 	status          *backendStatusTable
 	timeouts        map[core.BackendID]time.Duration
 	activeHealth    bool
@@ -114,6 +116,7 @@ func New(config Config) (*Gateway, error) {
 		capabilities:    capabilities,
 		canaries:        NewCanaryTable(config.Canary),
 		pricing:         copyPricing(config.Pricing),
+		decisions:       config.Decisions,
 		status:          newBackendStatusTable(ids, config.BackendTimeouts),
 		timeouts:        copyTimeouts(config.BackendTimeouts),
 		activeHealth:    config.ActiveHealth,
@@ -192,15 +195,20 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	defer span.End()
 
 	candidates := g.candidates(req)
+	record := candidates.Record
 	if candidates.Err != nil {
+		g.storeDecision(record, core.Response{}, candidates.Err)
 		return nil, candidates.Err
 	}
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
+		g.storeDecision(record, core.Response{}, ErrNoCandidates)
 		return nil, ErrNoCandidates
 	}
 	g.startShadow(ctx, req, candidates)
 	if len(candidates.Fallbacks) > 0 {
-		return g.streamWithFallbacks(ctx, req, candidates)
+		stream, err := g.streamWithFallbacks(ctx, req, candidates)
+		g.storeStreamDecision(record, stream, err)
+		return stream, err
 	}
 
 	remaining := copyCandidates(candidates.IDs)
@@ -208,28 +216,41 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	for len(remaining) > 0 {
 		choice := g.router.Pick(ctx, req, remaining)
 		if choice == "" {
+			g.storeDecision(record, core.Response{}, ErrNoCandidates)
 			return nil, ErrNoCandidates
 		}
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
 		attempts = append(attempts, choice)
 		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName, candidates.Canary, attempts, 0)
 		if !errors.Is(err, ErrLoadShed) {
+			g.storeStreamDecision(record, stream, err)
 			return stream, err
 		}
 		remaining = without(remaining, choice)
 	}
-	return nil, newAttemptError(ErrLoadShed, attempts, 0)
+	err := newAttemptError(ErrLoadShed, attempts, 0)
+	g.storeDecision(record, core.Response{}, err)
+	return nil, err
 }
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
 	candidates := g.candidates(req)
+	record := candidates.Record
 	if candidates.Err != nil {
+		g.storeDecision(record, core.Response{}, candidates.Err)
 		return core.Response{}, candidates.Err
 	}
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
+		g.storeDecision(record, core.Response{}, ErrNoCandidates)
 		return core.Response{}, ErrNoCandidates
 	}
 	g.startShadow(ctx, req, candidates)
+	resp, err := g.dispatch(ctx, req, candidates)
+	g.storeDecision(record, resp, err)
+	return resp, err
+}
+
+func (g *Gateway) dispatch(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
 	if len(candidates.Fallbacks) > 0 {
 		return g.callWithFallbacks(ctx, req, candidates)
 	}
@@ -244,6 +265,7 @@ type candidateSet struct {
 	IDs       []core.BackendID
 	Fallbacks []core.BackendID
 	Canary    CanaryDecision
+	Record    *RouteDecisionRecord
 	Err       error
 }
 
@@ -252,21 +274,27 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 	candidates := copyCandidates(decision.Candidates)
 	fallbacks := copyCandidates(decision.Fallbacks)
 	canaryCandidates := copyCandidates(routeCandidates([]core.BackendID{decision.Canary.Backend}, g.ids))
+	record := g.newDecisionRecord(req, decision)
+
 	if len(candidates) == 0 && len(fallbacks) == 0 {
-		return candidateSet{RouteName: decision.Name}
+		return candidateSet{RouteName: decision.Name, Record: record}
 	}
-	candidates = g.compatibleCandidates(req, candidates)
+
+	requestType := requestTypeForCapabilities(req)
+	compatible := g.compatibleCandidates(req, candidates)
+	record.addExclusions("capability", fmt.Sprintf("does not support %s", requestType), dropped(candidates, compatible))
+	candidates = compatible
 	fallbacks = g.compatibleCandidates(req, fallbacks)
 	canaryCandidates = g.compatibleCandidates(req, canaryCandidates)
 	if len(candidates) == 0 && len(fallbacks) == 0 && len(canaryCandidates) == 0 {
-		requestType := requestTypeForCapabilities(req)
-		return candidateSet{
-			RouteName: decision.Name,
-			Err:       fmt.Errorf("%w %q", ErrNoCompatibleCandidates, requestType),
-		}
+		err := fmt.Errorf("%w %q", ErrNoCompatibleCandidates, requestType)
+		return candidateSet{RouteName: decision.Name, Record: record, Err: err}
 	}
+
 	for _, filter := range g.filters {
-		candidates = filter.Apply(req, candidates)
+		kept := filter.Apply(req, candidates)
+		record.addExclusions(filter.Name(), filter.Name()+" filter excluded the backend", dropped(candidates, kept))
+		candidates = kept
 		if len(fallbacks) > 0 {
 			fallbacks = filter.Apply(req, fallbacks)
 		}
@@ -274,12 +302,84 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 			canaryCandidates = filter.Apply(req, canaryCandidates)
 		}
 	}
-	out := candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks}
+
+	out := candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks, Record: record}
+	beforeBudget := out.IDs
 	out = g.applyBudget(req, out)
+	out.Record = record
+	record.addExclusions("budget", "estimated cost over budget", dropped(beforeBudget, out.IDs))
 	if out.Err != nil {
 		return out
 	}
-	return g.applyCanary(req, out, decision.Canary, canaryCandidates)
+
+	out = g.applyCanary(req, out, decision.Canary, canaryCandidates)
+	out.Record = record
+	g.recordCanary(record, req, decision.Canary, out.Canary)
+	return out
+}
+
+func (g *Gateway) newDecisionRecord(req core.Request, decision RouteDecision) *RouteDecisionRecord {
+	if g.decisions == nil {
+		return nil
+	}
+	return &RouteDecisionRecord{
+		RequestID:       req.ID,
+		TenantID:        req.TenantID,
+		RouteName:       decision.Name,
+		RequestType:     requestTypeForCapabilities(req),
+		PromptTokens:    req.Features.PromptTokens,
+		LatencyBudgetMs: req.Features.LatencyBudgetMs,
+		CostBudgetUSD:   req.Features.CostBudget,
+		Candidates:      copyCandidates(decision.Candidates),
+	}
+}
+
+func (g *Gateway) recordCanary(record *RouteDecisionRecord, req core.Request, rule CanaryRule, decision CanaryDecision) {
+	if record == nil {
+		return
+	}
+	record.Canary = CanaryRecord{
+		Configured:     rule.Backend != "",
+		Assigned:       rule.Backend != "" && canaryAssigned(req, rule),
+		Mode:           decision.Mode,
+		Backend:        rule.Backend,
+		StickyKeyHash:  stickyKeyHash(req, rule),
+		RollbackReason: decision.RollbackReason,
+	}
+}
+
+func (g *Gateway) storeDecision(record *RouteDecisionRecord, resp core.Response, err error) {
+	if record == nil {
+		return
+	}
+	record.finish(resp, err)
+	g.decisions.put(record)
+}
+
+func (g *Gateway) storeStreamDecision(record *RouteDecisionRecord, stream core.Stream, err error) {
+	if record == nil {
+		return
+	}
+	resp := core.Response{}
+	if stream != nil {
+		if meta, ok := stream.(streamCostMetadata); ok {
+			resp.Backend = meta.BackendID()
+			resp.EstimatedCostUSD = meta.EstimatedCostUSD()
+		}
+	}
+	record.finish(resp, err)
+	g.decisions.put(record)
+}
+
+// DecisionRecords returns recent routing decisions for the debug endpoint.
+func (g *Gateway) DecisionRecords() []RouteDecisionRecord {
+	return g.decisions.Recent()
+}
+
+// DecisionRecord returns the routing decision for one request id when it is
+// still in the decision log.
+func (g *Gateway) DecisionRecord(requestID string) (RouteDecisionRecord, bool) {
+	return g.decisions.Lookup(requestID)
 }
 
 func (g *Gateway) applyCanary(req core.Request, candidates candidateSet, rule CanaryRule, canaryCandidates []core.BackendID) candidateSet {

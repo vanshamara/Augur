@@ -64,6 +64,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		return err
 	}
 	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
+	decisions := buildDecisionLog(config.DataPlane.DecisionLog)
 
 	gateway, err := dataplane.New(dataplane.Config{
 		Router:          routing.Router,
@@ -72,6 +73,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Capabilities:    buildBackendCapabilities(config.Backends),
 		Canary:          buildCanaryConfig(config.Canary),
 		Pricing:         buildBackendPricing(config.Backends),
+		Decisions:       decisions,
 		BackendTimeouts: buildBackendTimeouts(config.Backends),
 		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,
 		Filters:         filters,
@@ -106,6 +108,8 @@ func run(ctx context.Context, getenv func(string) string) error {
 			return gateway.Ready()
 		},
 		BackendStatus: gateway.BackendStatus,
+		Decisions:     gateway.DecisionRecords,
+		Decision:      gateway.DecisionRecord,
 	})
 	if err != nil {
 		return err
@@ -372,6 +376,13 @@ func buildBackendPricing(backends []appconfig.Backend) map[core.BackendID]datapl
 		}
 	}
 	return out
+}
+
+func buildDecisionLog(config appconfig.DecisionLog) *dataplane.DecisionLog {
+	if !config.Enabled {
+		return nil
+	}
+	return dataplane.NewDecisionLog(config.Size)
 }
 
 func buildBackendTimeouts(backends []appconfig.Backend) map[core.BackendID]time.Duration {

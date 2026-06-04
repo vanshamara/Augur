@@ -136,10 +136,16 @@ responses, or API keys.
 - `GET /healthz`: process is alive
 - `GET /readyz`: gateway is ready
 - `GET /debug/backends`: backend health, circuit, latency, and error window state
+- `GET /debug/decisions`: recent routing decisions, or one record with
+  `?request_id=...`
 
 Use `/readyz` for load balancer readiness checks.
-Use `/debug/backends` for operator checks. It follows gateway auth when auth is
-enabled.
+Use `/debug/backends` and `/debug/decisions` for operator checks. They follow
+gateway auth when auth is enabled.
+
+The decision log is off by default. Turn it on with `data_plane.decision_log`.
+It keeps the most recent decisions in memory only, and records token counts and
+a hashed canary sticky key, never prompt text or API keys.
 
 ## Auth
 

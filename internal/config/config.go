@@ -22,6 +22,7 @@ const (
 	DefaultWriteTimeout    = 30 * time.Second
 	DefaultIdleTimeout     = 2 * time.Minute
 	DefaultShutdownTimeout = 10 * time.Second
+	DefaultDecisionLogSize = 256
 )
 
 type App struct {
@@ -115,6 +116,12 @@ type DataPlane struct {
 	HealthCheck  HealthCheck                `json:"health_check"`
 	Health       map[core.BackendID]bool    `json:"health"`
 	Prices       map[core.BackendID]float64 `json:"prices"`
+	DecisionLog  DecisionLog                `json:"decision_log"`
+}
+
+type DecisionLog struct {
+	Enabled bool `json:"enabled"`
+	Size    int  `json:"size"`
 }
 
 type Learning struct {
@@ -381,6 +388,12 @@ func (a App) withDefaults() (App, error) {
 	}
 	if err := validateHealthCheck(a.DataPlane.HealthCheck); err != nil {
 		return App{}, err
+	}
+	if a.DataPlane.DecisionLog.Size < 0 {
+		return App{}, errors.New("data_plane decision_log size cannot be negative")
+	}
+	if a.DataPlane.DecisionLog.Enabled && a.DataPlane.DecisionLog.Size == 0 {
+		a.DataPlane.DecisionLog.Size = DefaultDecisionLogSize
 	}
 	a.Tenants.Header = strings.TrimSpace(a.Tenants.Header)
 	if a.Tenants.Header == "" {

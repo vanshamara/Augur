@@ -34,6 +34,8 @@ type Config struct {
 	NewID          func() string
 	Ready          ReadyFunc
 	BackendStatus  func() []dataplane.BackendStatus
+	Decisions      func() []dataplane.RouteDecisionRecord
+	Decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
 	AuthKeys       []string
 	Defaults       RequestDefaults
 	TenantHeader   string
@@ -64,6 +66,8 @@ type Server struct {
 	newID          func() string
 	ready          ReadyFunc
 	backendStatus  func() []dataplane.BackendStatus
+	decisions      func() []dataplane.RouteDecisionRecord
+	decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
 	authKeys       []string
 	defaults       RequestDefaults
 	tenantHeader   string
@@ -107,6 +111,8 @@ func New(config Config) (*Server, error) {
 		newID:          config.NewID,
 		ready:          config.Ready,
 		backendStatus:  config.BackendStatus,
+		decisions:      config.Decisions,
+		decision:       config.Decision,
 		authKeys:       cleanAuthKeys(config.AuthKeys),
 		defaults:       config.Defaults,
 		tenantHeader:   config.TenantHeader,
@@ -118,6 +124,7 @@ func New(config Config) (*Server, error) {
 	mux.HandleFunc("/healthz", server.handleHealth)
 	mux.HandleFunc("/readyz", server.handleReady)
 	mux.HandleFunc("/debug/backends", server.handleAuthenticatedBackendDebug)
+	mux.HandleFunc("/debug/decisions", server.handleAuthenticatedDecisionDebug)
 	mux.HandleFunc("/v1/chat/completions", server.handleAuthenticatedChatCompletions)
 	server.mux = mux
 	return server, nil
@@ -166,6 +173,42 @@ func (s *Server) handleBackendDebug(w http.ResponseWriter, r *http.Request) {
 		statuses = s.backendStatus()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"backends": statuses})
+}
+
+func (s *Server) handleAuthenticatedDecisionDebug(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "valid API key is required")
+		return
+	}
+	s.handleDecisionDebug(w, r)
+}
+
+// handleDecisionDebug explains routing decisions. With a request_id query it
+// returns one record, otherwise it returns the recent decisions.
+func (s *Server) handleDecisionDebug(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		return
+	}
+	if requestID := strings.TrimSpace(r.URL.Query().Get("request_id")); requestID != "" {
+		if s.decision == nil {
+			writeError(w, http.StatusNotFound, "not_found", "no decision for that request id")
+			return
+		}
+		record, ok := s.decision(requestID)
+		if !ok {
+			writeError(w, http.StatusNotFound, "not_found", "no decision for that request id")
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+		return
+	}
+	decisions := []dataplane.RouteDecisionRecord{}
+	if s.decisions != nil {
+		decisions = s.decisions()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"decisions": decisions})
 }
 
 func (s *Server) handleAuthenticatedChatCompletions(w http.ResponseWriter, r *http.Request) {

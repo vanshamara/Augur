@@ -210,6 +210,25 @@ eligible again after `success_threshold` consecutive successes.
 error rate, and timeout details for each backend. It uses the same auth settings
 as `/v1/chat/completions`.
 
+## Decision Log
+
+```yaml
+data_plane:
+  decision_log:
+    enabled: true
+    size: 256
+```
+
+When enabled, Augur keeps the most recent routing decisions in memory. Each
+record holds the route name, the candidate set, the reason each backend was
+dropped, the canary assignment, and the backend Augur chose. It records prompt
+token counts and a hashed canary sticky key, never prompt text or API keys.
+
+`GET /debug/decisions` returns the recent records. `GET
+/debug/decisions?request_id=ID` returns one record so you can explain why a
+specific request went where it did. Both follow the same auth settings as
+`/v1/chat/completions`. The default `size` is 256 when the log is enabled.
+
 ## Learning
 
 ```yaml
