@@ -291,6 +291,24 @@ func TestChatCompletionsUsesUserIDHints(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsTrimsRequestIDHeader(t *testing.T) {
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Request-ID", " req-1 ")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.ID != "req-1" {
+		t.Fatalf("request id got %q", gateway.req.ID)
+	}
+}
+
 func TestChatCompletionsUsesDefaultTenant(t *testing.T) {
 	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
 	server := testServer(t, gateway)
@@ -629,6 +647,19 @@ func TestChatCompletionsRejectsLargeBody(t *testing.T) {
 	server.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletionsRejectsTrailingJSON(t *testing.T) {
+	server := testServer(t, &fakeGateway{})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}{}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
 	}
 }

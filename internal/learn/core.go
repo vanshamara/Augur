@@ -21,6 +21,8 @@ type Core[S, O any] struct {
 	apply    func(current S, observation O) S
 	snapshot atomic.Pointer[S]
 	messages chan message[O]
+	sendMu   sync.RWMutex
+	closed   atomic.Bool
 	wait     sync.WaitGroup
 }
 
@@ -59,7 +61,7 @@ func (c *Core[S, O]) run() {
 // Update queues one observation for the writer. It does not wait for the apply,
 // so the caller stays fast.
 func (c *Core[S, O]) Update(observation O) {
-	c.messages <- message[O]{observation: observation}
+	c.send(message[O]{observation: observation})
 }
 
 // Snapshot returns the latest published state without taking a lock.
@@ -69,7 +71,9 @@ func (c *Core[S, O]) Snapshot() S {
 
 func (c *Core[S, O]) Transform(apply func(S) S) S {
 	result := make(chan any)
-	c.messages <- message[O]{transform: apply, result: result}
+	if !c.send(message[O]{transform: apply, result: result}) {
+		return c.Snapshot()
+	}
 	return (<-result).(S)
 }
 
@@ -77,12 +81,29 @@ func (c *Core[S, O]) Transform(apply func(S) S) S {
 // Tests use it to read state at a known point.
 func (c *Core[S, O]) Flush() {
 	barrier := make(chan struct{})
-	c.messages <- message[O]{barrier: barrier}
+	if !c.send(message[O]{barrier: barrier}) {
+		return
+	}
 	<-barrier
 }
 
 // Close stops the writer after it drains the queued updates.
 func (c *Core[S, O]) Close() {
+	if !c.closed.CompareAndSwap(false, true) {
+		return
+	}
+	c.sendMu.Lock()
 	close(c.messages)
+	c.sendMu.Unlock()
 	c.wait.Wait()
+}
+
+func (c *Core[S, O]) send(msg message[O]) bool {
+	c.sendMu.RLock()
+	defer c.sendMu.RUnlock()
+	if c.closed.Load() {
+		return false
+	}
+	c.messages <- msg
+	return true
 }

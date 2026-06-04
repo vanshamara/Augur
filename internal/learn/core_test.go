@@ -83,3 +83,27 @@ func TestConcurrentUpdatesAreNotLost(t *testing.T) {
 		t.Fatalf("expected %d updates, got %+v", writers*perWriter, got)
 	}
 }
+
+func TestCloseIgnoresLaterOperations(t *testing.T) {
+	core := NewCore(counter{}, add)
+	core.Update(10)
+	core.Flush()
+	core.Close()
+
+	core.Update(5)
+	core.Flush()
+	got := core.Transform(func(current counter) counter {
+		current.sum += 100
+		return current
+	})
+
+	if got.sum != 10 || got.count != 1 {
+		t.Fatalf("closed core should keep the last snapshot, got %+v", got)
+	}
+}
+
+func TestCloseIsIdempotent(t *testing.T) {
+	core := NewCore(counter{}, add)
+	core.Close()
+	core.Close()
+}

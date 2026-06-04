@@ -257,6 +257,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "request body must be valid JSON")
 		return
 	}
+	var extra struct{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "request body must contain one JSON object")
+		return
+	}
 	if err := body.validate(); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
@@ -585,10 +590,10 @@ func estimateTokens(text string) int {
 }
 
 func requestID(r *http.Request) string {
-	if id := r.Header.Get("X-Request-ID"); id != "" {
+	if id := strings.TrimSpace(r.Header.Get("X-Request-ID")); id != "" {
 		return id
 	}
-	if id := r.Header.Get("OpenAI-Request-ID"); id != "" {
+	if id := strings.TrimSpace(r.Header.Get("OpenAI-Request-ID")); id != "" {
 		return id
 	}
 	return ""

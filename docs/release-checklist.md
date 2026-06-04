@@ -5,8 +5,9 @@ Use this before making the repo public or cutting a release.
 ## Code
 
 - [ ] Run `go test ./...`.
+- [ ] Run `go vet ./...`.
 - [ ] Run `go run ./cmd/demo` and confirm all six product promises hold.
-- [ ] Run focused race tests for packages changed in the release.
+- [ ] Run `go test -race ./...`.
 - [ ] Run `bash -n scripts/smoke-test.sh`.
 - [ ] Run `scripts/smoke-test.sh`.
 - [ ] Run `scripts/routing-smoke-test.sh`.

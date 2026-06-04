@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,10 @@ func Parse(data []byte) (App, error) {
 	if err := decoder.Decode(&app); err != nil {
 		return App{}, err
 	}
+	var extra struct{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return App{}, errors.New("config must contain one JSON object")
+	}
 	return app.withDefaults()
 }
 
@@ -338,13 +343,20 @@ func (a App) withDefaults() (App, error) {
 	if len(a.Backends) == 0 {
 		return App{}, errors.New("at least one backend is required")
 	}
+	backendIDs := map[core.BackendID]bool{}
 	for i := range a.Backends {
-		if strings.TrimSpace(a.Backends[i].Model) == "" {
+		a.Backends[i].Model = strings.TrimSpace(a.Backends[i].Model)
+		a.Backends[i].ID = core.BackendID(strings.TrimSpace(string(a.Backends[i].ID)))
+		if a.Backends[i].Model == "" {
 			return App{}, fmt.Errorf("backend %d model is required", i)
 		}
 		if a.Backends[i].ID == "" {
 			a.Backends[i].ID = core.BackendID(a.Backends[i].Model)
 		}
+		if backendIDs[a.Backends[i].ID] {
+			return App{}, fmt.Errorf("duplicate backend id %q", a.Backends[i].ID)
+		}
+		backendIDs[a.Backends[i].ID] = true
 		a.Backends[i].HealthPath = strings.TrimSpace(a.Backends[i].HealthPath)
 		if a.Backends[i].Timeout.Duration < 0 {
 			return App{}, fmt.Errorf("backend %q timeout cannot be negative", a.Backends[i].ID)
@@ -352,7 +364,11 @@ func (a App) withDefaults() (App, error) {
 		if err := validateBackendCapabilities(a.Backends[i]); err != nil {
 			return App{}, err
 		}
+		if a.Backends[i].MaxCompletionTokens < 0 {
+			return App{}, fmt.Errorf("backend %q max_completion_tokens cannot be negative", a.Backends[i].ID)
+		}
 	}
+	a.normalizeRoutes()
 	a.applyPricingTable()
 	if err := validatePricing(a.Pricing, a.Backends); err != nil {
 		return App{}, err
@@ -360,10 +376,22 @@ func (a App) withDefaults() (App, error) {
 	if err := validateRoutes(a.Routes, a.Backends); err != nil {
 		return App{}, err
 	}
-	if err := validateRouter(a.Router.Type); err != nil {
+	if err := validateRouter(a.Router, backendIDs); err != nil {
 		return App{}, err
 	}
 	if err := validateFilters(a.DataPlane.Filters); err != nil {
+		return App{}, err
+	}
+	if err := validateBackendHealthMap(a.DataPlane.Health, backendIDs); err != nil {
+		return App{}, err
+	}
+	if err := validateBackendPriceOverrides(a.DataPlane.Prices, backendIDs); err != nil {
+		return App{}, err
+	}
+	if err := validateCircuit(a.DataPlane.Circuit); err != nil {
+		return App{}, err
+	}
+	if err := validateConcurrency(a.DataPlane.Concurrency); err != nil {
 		return App{}, err
 	}
 	if a.DataPlane.SingleFlight.Enabled && a.DataPlane.SingleFlight.Key == "" {
@@ -381,6 +409,12 @@ func (a App) withDefaults() (App, error) {
 			return App{}, errors.New("data_plane hedge budget_fraction must be between 0 and 1")
 		}
 	}
+	if a.DataPlane.Hedge.Delay.Duration < 0 {
+		return App{}, errors.New("data_plane hedge delay cannot be negative")
+	}
+	if a.DataPlane.Hedge.MaxInFlight < 0 {
+		return App{}, errors.New("data_plane hedge max_in_flight cannot be negative")
+	}
 	if a.DataPlane.Hedge.TriggerPercentile < 0 || a.DataPlane.Hedge.TriggerPercentile > 100 {
 		return App{}, errors.New("data_plane hedge trigger_percentile must be between 0 and 100")
 	}
@@ -395,6 +429,9 @@ func (a App) withDefaults() (App, error) {
 	}
 	if a.DataPlane.DecisionLog.Enabled && a.DataPlane.DecisionLog.Size == 0 {
 		a.DataPlane.DecisionLog.Size = DefaultDecisionLogSize
+	}
+	if err := validateCanary(a.Canary); err != nil {
+		return App{}, err
 	}
 	a.Tenants.Header = strings.TrimSpace(a.Tenants.Header)
 	if a.Tenants.Header == "" {
@@ -417,6 +454,12 @@ func (a App) withDefaults() (App, error) {
 	}
 	if a.Learning.QueueSize <= 0 {
 		a.Learning.QueueSize = 1024
+	}
+	if err := validatePolicy(a.Policy); err != nil {
+		return App{}, err
+	}
+	if err := validateBudgets(a.Budgets); err != nil {
+		return App{}, err
 	}
 	if a.Learning.Persistence.SaveEvery < 0 {
 		return App{}, errors.New("learning persistence save_every cannot be negative")
@@ -447,6 +490,27 @@ func (c Canary) RollbackConfig() control.RollbackConfig {
 	}
 }
 
+func (a *App) normalizeRoutes() {
+	for i := range a.Routes {
+		route := &a.Routes[i]
+		route.Name = strings.TrimSpace(route.Name)
+		route.Canary.Backend = core.BackendID(strings.TrimSpace(string(route.Canary.Backend)))
+		route.Canary.StickyKey = strings.TrimSpace(route.Canary.StickyKey)
+		for j := range route.Candidates {
+			route.Candidates[j].Backend = core.BackendID(strings.TrimSpace(string(route.Candidates[j].Backend)))
+		}
+		for j := range route.Fallbacks {
+			route.Fallbacks[j].Backend = core.BackendID(strings.TrimSpace(string(route.Fallbacks[j].Backend)))
+		}
+		for j := range route.Match.Tenants {
+			route.Match.Tenants[j] = strings.TrimSpace(route.Match.Tenants[j])
+		}
+		for j := range route.Match.UserTiers {
+			route.Match.UserTiers[j] = strings.TrimSpace(route.Match.UserTiers[j])
+		}
+	}
+}
+
 func validateTenant(name string, tenant Tenant) error {
 	if tenant.MaxInFlight < 0 {
 		return fmt.Errorf("tenant %q max_in_flight cannot be negative", name)
@@ -463,6 +527,107 @@ func validateTenant(name string, tenant Tenant) error {
 	if tenant.Policy.MaxCompletionTokens < 0 {
 		return fmt.Errorf("tenant %q policy max_completion_tokens cannot be negative", name)
 	}
+	if tenant.Policy.Temperature != nil && *tenant.Policy.Temperature < 0 {
+		return fmt.Errorf("tenant %q policy temperature cannot be negative", name)
+	}
+	return nil
+}
+
+func validateCanary(config Canary) error {
+	if config.P95RegressionRatio < 0 {
+		return errors.New("canary p95_regression_ratio cannot be negative")
+	}
+	if config.MaxErrorRate < 0 || config.MaxErrorRate > 1 {
+		return errors.New("canary max_error_rate must be between 0 and 1")
+	}
+	if config.MinSamples < 0 {
+		return errors.New("canary min_samples cannot be negative")
+	}
+	return nil
+}
+
+func validateBudgets(config Budgets) error {
+	if config.LatencyBudgetMs < 0 {
+		return errors.New("budgets latency_budget_ms cannot be negative")
+	}
+	if config.CostBudgetUSD < 0 {
+		return errors.New("budgets cost_budget_usd cannot be negative")
+	}
+	if config.MaxCompletionTokens < 0 {
+		return errors.New("budgets max_completion_tokens cannot be negative")
+	}
+	if config.Temperature != nil && *config.Temperature < 0 {
+		return errors.New("budgets temperature cannot be negative")
+	}
+	return nil
+}
+
+func validatePolicy(config control.PolicyConfig) error {
+	switch config.Objective.Type {
+	case "", control.MinimizeLatency, control.MinimizeCost, control.BlendObjective:
+	default:
+		return fmt.Errorf("unsupported policy objective type %q", config.Objective.Type)
+	}
+	if config.Objective.LatencyWeight < 0 {
+		return errors.New("policy objective latency_weight cannot be negative")
+	}
+	if config.Objective.CostWeight < 0 {
+		return errors.New("policy objective cost_weight cannot be negative")
+	}
+	if config.Constraints.MaxP95Ms < 0 {
+		return errors.New("policy constraints max_p95_ms cannot be negative")
+	}
+	if config.Constraints.MinQuality < 0 || config.Constraints.MinQuality > 1 {
+		return errors.New("policy constraints min_quality must be between 0 and 1")
+	}
+	if config.Constraints.MaxErrorRate < 0 || config.Constraints.MaxErrorRate > 1 {
+		return errors.New("policy constraints max_error_rate must be between 0 and 1")
+	}
+	switch config.Constraints.QualityGate {
+	case "", control.GateOnMean, control.GateOnLCB, control.GateOnUCB:
+	default:
+		return fmt.Errorf("unsupported policy quality_gate %q", config.Constraints.QualityGate)
+	}
+	if config.Exploration.ColdStartBudget < 0 || config.Exploration.ColdStartBudget > 1 {
+		return errors.New("policy exploration cold_start_budget must be between 0 and 1")
+	}
+	if config.Exploration.JudgeSampleRate < 0 || config.Exploration.JudgeSampleRate > 1 {
+		return errors.New("policy exploration judge_sample_rate must be between 0 and 1")
+	}
+	switch config.OnInfeasible {
+	case "", control.InfeasibleBestEffort, control.InfeasibleFailClosed:
+		return nil
+	default:
+		return fmt.Errorf("unsupported policy on_infeasible %q", config.OnInfeasible)
+	}
+}
+
+func validateCircuit(config Circuit) error {
+	if config.FailureThreshold < 0 {
+		return errors.New("data_plane circuit failure_threshold cannot be negative")
+	}
+	if config.RecoveryAfter.Duration < 0 {
+		return errors.New("data_plane circuit recovery_after cannot be negative")
+	}
+	if config.HalfOpenMax < 0 {
+		return errors.New("data_plane circuit half_open_max cannot be negative")
+	}
+	return nil
+}
+
+func validateConcurrency(config Concurrency) error {
+	if config.InitialLimit < 0 {
+		return errors.New("data_plane concurrency initial_limit cannot be negative")
+	}
+	if config.MinLimit < 0 {
+		return errors.New("data_plane concurrency min_limit cannot be negative")
+	}
+	if config.MaxLimit < 0 {
+		return errors.New("data_plane concurrency max_limit cannot be negative")
+	}
+	if config.TargetLatencyMs < 0 {
+		return errors.New("data_plane concurrency target_latency_ms cannot be negative")
+	}
 	return nil
 }
 
@@ -478,6 +643,30 @@ func validateHealthCheck(config HealthCheck) error {
 	}
 	if config.SuccessThreshold < 0 {
 		return errors.New("data_plane health_check success_threshold cannot be negative")
+	}
+	return nil
+}
+
+func validateBackendHealthMap(values map[core.BackendID]bool, known map[core.BackendID]bool) error {
+	for id := range values {
+		if !known[id] {
+			return fmt.Errorf("data_plane health references unknown backend %q", id)
+		}
+	}
+	return nil
+}
+
+func validateBackendPriceOverrides(values map[core.BackendID]float64, known map[core.BackendID]bool) error {
+	for id, price := range values {
+		if !known[id] {
+			return fmt.Errorf("data_plane prices references unknown backend %q", id)
+		}
+		if price < 0 {
+			return fmt.Errorf("data_plane prices backend %q cannot be negative", id)
+		}
+		if price >= maxCostPerToken {
+			return fmt.Errorf("data_plane prices backend %q is %g, which is too high for a per-token price; set the price for a single token", id, price)
+		}
 	}
 	return nil
 }
@@ -656,13 +845,27 @@ func (a *App) applyPricingTable() {
 	}
 }
 
-func validateRouter(name string) error {
-	switch name {
+func validateRouter(config Router, known map[core.BackendID]bool) error {
+	switch config.Type {
 	case "static", "round_robin", "round-robin", "least_loaded", "least-loaded", "ewma", "cost_aware", "cost-aware", "p2c", "litellm_shuffle", "litellm-shuffle", "envoy_least_request", "envoy-least-request", "bandit":
-		return nil
 	default:
-		return fmt.Errorf("unsupported router %q", name)
+		return fmt.Errorf("unsupported router %q", config.Type)
 	}
+	if config.Alpha < 0 || config.Alpha > 1 {
+		return errors.New("router alpha must be between 0 and 1")
+	}
+	if config.P2CWindow < 0 {
+		return errors.New("router p2c_window cannot be negative")
+	}
+	for id, weight := range config.Weights {
+		if !known[id] {
+			return fmt.Errorf("router weights reference unknown backend %q", id)
+		}
+		if weight < 0 {
+			return fmt.Errorf("router weight for backend %q cannot be negative", id)
+		}
+	}
+	return nil
 }
 
 func validateFilters(filters []string) error {

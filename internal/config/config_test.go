@@ -256,6 +256,36 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestParseTrimsBackendAndRouteIdentifiers(t *testing.T) {
+	config, err := Parse([]byte(`{
+		"backends": [{"id": " fast ", "model": " model-a "}],
+		"routes": [{
+			"name": " default ",
+			"match": {"tenants": [" premium "], "user_tiers": [" standard "]},
+			"candidates": [{"backend": " fast "}],
+			"fallbacks": [{"backend": " fast "}],
+			"canary": {"backend": " fast ", "percent": 5, "sticky_key": " tenant_id "}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-a" {
+		t.Fatalf("backend got %+v", config.Backends[0])
+	}
+	route := config.Routes[0]
+	if route.Name != "default" || route.Candidates[0].Backend != "fast" || route.Fallbacks[0].Backend != "fast" {
+		t.Fatalf("route got %+v", route)
+	}
+	if route.Match.Tenants[0] != "premium" || route.Match.UserTiers[0] != "standard" {
+		t.Fatalf("route match got %+v", route.Match)
+	}
+	if route.Canary.Backend != "fast" || route.Canary.StickyKey != "tenant_id" {
+		t.Fatalf("canary got %+v", route.Canary)
+	}
+}
+
 func TestParseAppliesPricingTableByModel(t *testing.T) {
 	config, err := Parse([]byte(`{
 		"backends": [
@@ -511,6 +541,25 @@ func TestParseRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestParseRejectsDuplicateBackendIDs(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [
+			{"id": "same", "model": "model-a"},
+			{"id": "same", "model": "model-b"}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("duplicate backend ids should fail")
+	}
+}
+
+func TestParseRejectsTrailingJSON(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}]}{}`))
+	if err == nil {
+		t.Fatal("trailing json should fail")
+	}
+}
+
 func TestParseYAMLRejectsUnknownFields(t *testing.T) {
 	_, err := ParseYAML([]byte("unknown: true\nbackends:\n  - model: model-a\n"))
 	if err == nil {
@@ -522,6 +571,23 @@ func TestParseRejectsBadRouter(t *testing.T) {
 	_, err := Parse([]byte(`{"router":{"type":"bad"},"backends":[{"model":"model-a"}]}`))
 	if err == nil {
 		t.Fatal("bad router should fail")
+	}
+}
+
+func TestParseRejectsBadRouterConfig(t *testing.T) {
+	cases := map[string]string{
+		"alpha":          `{"router":{"alpha":1.2},"backends":[{"id":"a","model":"model-a"}]}`,
+		"p2c_window":     `{"router":{"p2c_window":-1},"backends":[{"id":"a","model":"model-a"}]}`,
+		"unknown_weight": `{"router":{"weights":{"missing":1}},"backends":[{"id":"a","model":"model-a"}]}`,
+		"bad_weight":     `{"router":{"weights":{"a":-1}},"backends":[{"id":"a","model":"model-a"}]}`,
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(data))
+			if err == nil {
+				t.Fatal("bad router config should fail")
+			}
+		})
 	}
 }
 
@@ -680,6 +746,13 @@ func TestParseRejectsNegativeBackendTimeout(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNegativeBackendMaxCompletionTokens(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a","max_completion_tokens":-1}]}`))
+	if err == nil {
+		t.Fatal("negative backend max completion tokens should fail")
+	}
+}
+
 func TestParseRejectsNegativeActiveHealthInterval(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"health_check":{"interval":"-1s"}}}`))
 	if err == nil {
@@ -774,6 +847,92 @@ func TestParseRejectsInvalidHedgeTriggerPercentile(t *testing.T) {
 	}
 }
 
+func TestParseRejectsBadDataPlaneValues(t *testing.T) {
+	cases := map[string]string{
+		"unknown_health":    `{"data_plane":{"health":{"missing":true}}}`,
+		"unknown_price":     `{"data_plane":{"prices":{"missing":0.1}}}`,
+		"negative_price":    `{"data_plane":{"prices":{"a":-0.1}}}`,
+		"wrong_price_unit":  `{"data_plane":{"prices":{"a":2.0}}}`,
+		"circuit_threshold": `{"data_plane":{"circuit":{"failure_threshold":-1}}}`,
+		"circuit_recovery":  `{"data_plane":{"circuit":{"recovery_after":"-1s"}}}`,
+		"circuit_half_open": `{"data_plane":{"circuit":{"half_open_max":-1}}}`,
+		"limit_initial":     `{"data_plane":{"concurrency":{"initial_limit":-1}}}`,
+		"limit_min":         `{"data_plane":{"concurrency":{"min_limit":-1}}}`,
+		"limit_max":         `{"data_plane":{"concurrency":{"max_limit":-1}}}`,
+		"limit_latency":     `{"data_plane":{"concurrency":{"target_latency_ms":-1}}}`,
+		"hedge_delay":       `{"data_plane":{"hedge":{"delay":"-1s"}}}`,
+		"hedge_inflight":    `{"data_plane":{"hedge":{"max_in_flight":-1}}}`,
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload := strings.TrimSuffix(data, "}") + `,"backends":[{"id":"a","model":"model-a"}]}`
+			_, err := Parse([]byte(payload))
+			if err == nil {
+				t.Fatal("bad data plane value should fail")
+			}
+		})
+	}
+}
+
+func TestParseRejectsBadPolicyValues(t *testing.T) {
+	cases := map[string]string{
+		"objective":         `{"policy":{"objective":{"type":"magic"}}}`,
+		"latency_weight":    `{"policy":{"objective":{"latency_weight":-1}}}`,
+		"cost_weight":       `{"policy":{"objective":{"cost_weight":-1}}}`,
+		"max_p95":           `{"policy":{"constraints":{"max_p95_ms":-1}}}`,
+		"min_quality":       `{"policy":{"constraints":{"min_quality":1.2}}}`,
+		"max_error_rate":    `{"policy":{"constraints":{"max_error_rate":1.2}}}`,
+		"quality_gate":      `{"policy":{"constraints":{"quality_gate":"bad"}}}`,
+		"cold_start_budget": `{"policy":{"exploration":{"cold_start_budget":1.2}}}`,
+		"judge_sample_rate": `{"policy":{"exploration":{"judge_sample_rate":1.2}}}`,
+		"on_infeasible":     `{"policy":{"on_infeasible":"bad"}}`,
+	}
+	for name, policy := range cases {
+		t.Run(name, func(t *testing.T) {
+			data := strings.TrimSuffix(policy, "}") + `,"backends":[{"model":"model-a"}]}`
+			_, err := Parse([]byte(data))
+			if err == nil {
+				t.Fatal("bad policy value should fail")
+			}
+		})
+	}
+}
+
+func TestParseRejectsBadCanaryValues(t *testing.T) {
+	cases := map[string]string{
+		"p95":        `{"canary":{"p95_regression_ratio":-1}}`,
+		"error_rate": `{"canary":{"max_error_rate":1.2}}`,
+		"samples":    `{"canary":{"min_samples":-1}}`,
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload := strings.TrimSuffix(data, "}") + `,"backends":[{"model":"model-a"}]}`
+			_, err := Parse([]byte(payload))
+			if err == nil {
+				t.Fatal("bad canary value should fail")
+			}
+		})
+	}
+}
+
+func TestParseRejectsBadBudgetValues(t *testing.T) {
+	cases := map[string]string{
+		"latency":     `{"budgets":{"latency_budget_ms":-1}}`,
+		"cost":        `{"budgets":{"cost_budget_usd":-1}}`,
+		"max_tokens":  `{"budgets":{"max_completion_tokens":-1}}`,
+		"temperature": `{"budgets":{"temperature":-1}}`,
+	}
+	for name, data := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload := strings.TrimSuffix(data, "}") + `,"backends":[{"model":"model-a"}]}`
+			_, err := Parse([]byte(payload))
+			if err == nil {
+				t.Fatal("bad budget value should fail")
+			}
+		})
+	}
+}
+
 func TestParseRejectsNegativeTenantLimit(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"tenants":{"defaults":{"max_in_flight":-1}}}`))
 	if err == nil {
@@ -785,6 +944,13 @@ func TestParseRejectsEmptyTenantOverride(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"tenants":{"overrides":{"":{"max_in_flight":1}}}}`))
 	if err == nil {
 		t.Fatal("empty tenant override should fail")
+	}
+}
+
+func TestParseRejectsNegativeTenantTemperature(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"tenants":{"defaults":{"policy":{"temperature":-1}}}}`))
+	if err == nil {
+		t.Fatal("negative tenant temperature should fail")
 	}
 }
 
