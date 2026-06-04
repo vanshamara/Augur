@@ -220,6 +220,81 @@ go run ./cmd/compare
 
 The report uses mock backends and does not call real provider APIs.
 
+## Configure Routing
+
+Routing is driven by a config file. Each backend lists its model, capabilities,
+and prices. Each route says which backends can serve a kind of request, with
+optional fallbacks and a canary.
+
+```yaml
+backends:
+  - id: "fast"
+    model: "gpt-4.1-nano"
+    capabilities: ["chat"]
+    max_completion_tokens: 512
+  - id: "balanced"
+    model: "gpt-4.1-mini"
+    capabilities: ["chat", "reasoning", "coding"]
+    max_completion_tokens: 768
+  - id: "strong"
+    model: "gpt-4.1"
+    capabilities: ["reasoning", "coding"]
+    max_completion_tokens: 1024
+pricing:
+  models:
+    gpt-4.1-nano:
+      input_cost_per_token: 0.0000001
+      output_cost_per_token: 0.0000004
+    gpt-4.1-mini:
+      input_cost_per_token: 0.0000004
+      output_cost_per_token: 0.0000016
+    gpt-4.1:
+      input_cost_per_token: 0.000002
+      output_cost_per_token: 0.000008
+routes:
+  - name: "simple-chat"
+    match:
+      task_types: ["chat"]
+    candidates:
+      - backend: "fast"
+    fallbacks:
+      - backend: "balanced"
+  - name: "reasoning"
+    match:
+      task_types: ["reasoning"]
+    candidates:
+      - backend: "balanced"
+    fallbacks:
+      - backend: "strong"
+    canary:
+      backend: "strong"
+      percent: 5
+      sticky_key: "tenant_and_request"
+  - name: "default"
+    candidates:
+      - backend: "fast"
+      - backend: "balanced"
+      - backend: "strong"
+router:
+  type: "cost_aware"
+budgets:
+  cost_budget_usd: 0.02
+```
+
+Reading the example:
+
+- A `chat` request matches `simple-chat`, goes to `fast`, and falls back to
+  `balanced` if `fast` fails with a retryable error before a response.
+- A `reasoning` request goes to `balanced`, falls back to `strong`, and sends 5
+  percent of traffic to `strong` as a canary. The same `tenant_and_request` key
+  stays on the same side across retries.
+- Anything else matches the `default` route.
+- The `cost_aware` router prefers the cheapest eligible backend, and the
+  `cost_budget_usd` budget drops any backend whose estimated cost is over budget.
+
+See `configs/cost-aware.example.yaml` for a budget-focused config and
+`configs/request-aware.example.yaml` for a learned-routing config.
+
 ## Config
 
 Public examples are in `configs/`:
@@ -241,6 +316,24 @@ for quick local runs and uses round-robin routing by default. Use a config file
 when you want cost-aware, latency-aware, or learned backend selection.
 
 Keep real config files and API keys outside the repo.
+
+## Limitations
+
+Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
+
+- It only speaks the OpenAI-compatible chat API. There is no image, audio, video,
+  or embedding-serving API surface, even though `embedding` exists as a routing
+  task type.
+- It only ships an OpenAI-compatible backend adapter. Any provider you use must
+  expose that API shape.
+- It has no built-in TLS, no Kubernetes manifests, and no bundled dashboard. Put
+  it behind your own proxy and monitoring.
+- The decision log lives in memory per process. In a multi-replica deployment a
+  request id only resolves on the replica that served it.
+- Learned routing is optional and has not been tuned against your workload. Start
+  with a simple router and real traffic data.
+- The baseline report compares routing policies against local shims. It does not
+  claim Augur is faster than a real LiteLLM or Envoy deployment.
 
 ## Docs
 

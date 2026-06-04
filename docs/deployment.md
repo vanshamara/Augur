@@ -8,9 +8,13 @@ behind your own proxy, ingress, or platform layer for public traffic.
 ```bash
 go build -o bin/augur ./cmd/augur
 go test ./...
+go run ./cmd/demo
 scripts/smoke-test.sh
 scripts/routing-smoke-test.sh
 ```
+
+`go run ./cmd/demo` checks the six routing promises against scripted backends. It
+makes no real provider calls.
 
 Run a real provider smoke test before launch:
 
