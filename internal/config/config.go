@@ -346,6 +346,9 @@ func (a App) withDefaults() (App, error) {
 		}
 	}
 	a.applyPricingTable()
+	if err := validatePricing(a.Pricing, a.Backends); err != nil {
+		return App{}, err
+	}
 	if err := validateRoutes(a.Routes, a.Backends); err != nil {
 		return App{}, err
 	}
@@ -584,6 +587,44 @@ func supportedRequestType(value core.RequestType) bool {
 
 func emptyRouteMatch(match RouteMatch) bool {
 	return len(match.TaskTypes) == 0 && len(match.Tenants) == 0 && len(match.UserTiers) == 0
+}
+
+// maxCostPerToken guards against a common unit mistake. Prices are per single
+// token, so any value at or above one dollar per token is almost always a price
+// meant for a million or a thousand tokens instead.
+const maxCostPerToken = 1.0
+
+// validatePricing rejects negative prices and prices that look like the wrong
+// unit, so config errors point at the real problem instead of silent overcharge.
+func validatePricing(pricing Pricing, backends []Backend) error {
+	for model, price := range pricing.Models {
+		if err := checkCostPerToken(fmt.Sprintf("pricing model %q", model), "input_cost_per_token", price.InputCostPerToken); err != nil {
+			return err
+		}
+		if err := checkCostPerToken(fmt.Sprintf("pricing model %q", model), "output_cost_per_token", price.OutputCostPerToken); err != nil {
+			return err
+		}
+	}
+	for _, backend := range backends {
+		label := fmt.Sprintf("backend %q", backend.ID)
+		if err := checkCostPerToken(label, "input_cost_per_token", backend.InputCostPerToken); err != nil {
+			return err
+		}
+		if err := checkCostPerToken(label, "output_cost_per_token", backend.OutputCostPerToken); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkCostPerToken(owner string, field string, value float64) error {
+	if value < 0 {
+		return fmt.Errorf("%s %s cannot be negative", owner, field)
+	}
+	if value >= maxCostPerToken {
+		return fmt.Errorf("%s %s is %g, which is too high for a per-token price; set the price for a single token", owner, field, value)
+	}
+	return nil
 }
 
 func (a *App) applyPricingTable() {

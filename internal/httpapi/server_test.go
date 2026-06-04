@@ -888,6 +888,37 @@ func TestBackendDebugRequiresAuthWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsWritesCostHeaders(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:        "req-1",
+			Backend:          "fast",
+			OutputText:       "hello",
+			EstimatedCostUSD: 0.004,
+			Outcome: core.Outcome{
+				OutputTokens: 5,
+				CostUSD:      0.0031,
+			},
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello there"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Augur-Estimated-Cost-USD"); got != "0.004" {
+		t.Fatalf("estimated cost header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Cost-USD"); got != "0.0031" {
+		t.Fatalf("realized cost header got %q", got)
+	}
+}
+
 func testServer(t *testing.T, gateway Gateway) *Server {
 	t.Helper()
 	return testServerWithDefaults(t, gateway, RequestDefaults{

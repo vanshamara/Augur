@@ -145,7 +145,9 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 The response includes `X-Augur-Backend`, which shows the final backend Augur
 used. When a route fallback runs, Augur also returns `X-Augur-Fallback-Count`
-and `X-Augur-Attempted-Backends`.
+and `X-Augur-Attempted-Backends`. When backend prices are configured, Augur adds
+`X-Augur-Estimated-Cost-USD` and `X-Augur-Cost-USD` so you can see the estimated
+and realized cost of the call.
 
 Send request-aware hints when the caller knows the workload:
 
@@ -176,6 +178,11 @@ When hints are missing, Augur runs a local prompt classifier before routing. It
 marks simple or spam-like prompts as cheap chat, and marks harder coding or
 reasoning prompts as higher-need requests. This classifier does not call a
 model, so it does not add routing cost.
+
+When a request carries a cost budget, Augur estimates the most each backend
+could cost before routing and drops the ones that would go over budget. If every
+backend is over budget, the request fails with a clear over-budget error instead
+of calling an expensive model.
 
 The request-aware example uses quality as a floor and then optimizes latency and
 cost among the feasible backends. This keeps cheaper models in play without

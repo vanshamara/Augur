@@ -56,6 +56,7 @@ type Response struct {
 	CanaryRollback    string
 	AttemptedBackends []BackendID
 	FallbackCount     int
+	EstimatedCostUSD  float64
 	OutputText        string
 	Outcome
 }

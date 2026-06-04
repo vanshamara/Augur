@@ -793,6 +793,10 @@ type attemptErrorMetadata interface {
 	FallbackCount() int
 }
 
+type estimatedCostMetadata interface {
+	EstimatedCostUSD() float64
+}
+
 func writeResponseRoutingHeaders(w http.ResponseWriter, resp core.Response) {
 	w.Header().Set("X-Augur-Backend", string(resp.Backend))
 	if resp.RouteName != "" {
@@ -800,6 +804,7 @@ func writeResponseRoutingHeaders(w http.ResponseWriter, resp core.Response) {
 	}
 	writeCanaryHeaders(w, resp.CanaryMode, resp.CanaryBackend, resp.CanaryRollback)
 	writeAttemptHeaders(w, resp.AttemptedBackends, resp.FallbackCount)
+	writeCostHeaders(w, resp.EstimatedCostUSD, resp.CostUSD)
 }
 
 func writeStreamRoutingHeaders(w http.ResponseWriter, stream core.Stream) {
@@ -813,6 +818,9 @@ func writeStreamRoutingHeaders(w http.ResponseWriter, stream core.Stream) {
 	}
 	writeCanaryHeaders(w, metadata.CanaryMode(), metadata.CanaryBackend(), metadata.CanaryRollback())
 	writeAttemptHeaders(w, metadata.AttemptedBackends(), metadata.FallbackCount())
+	if estimator, ok := stream.(estimatedCostMetadata); ok {
+		writeCostHeaders(w, estimator.EstimatedCostUSD(), 0)
+	}
 }
 
 func writeErrorAttemptHeaders(w http.ResponseWriter, err error) {
@@ -832,6 +840,15 @@ func writeAttemptHeaders(w http.ResponseWriter, attempts []core.BackendID, fallb
 		parts = append(parts, string(id))
 	}
 	w.Header().Set("X-Augur-Attempted-Backends", strings.Join(parts, ","))
+}
+
+func writeCostHeaders(w http.ResponseWriter, estimatedUSD float64, realizedUSD float64) {
+	if estimatedUSD > 0 {
+		w.Header().Set("X-Augur-Estimated-Cost-USD", strconv.FormatFloat(estimatedUSD, 'f', -1, 64))
+	}
+	if realizedUSD > 0 {
+		w.Header().Set("X-Augur-Cost-USD", strconv.FormatFloat(realizedUSD, 'f', -1, 64))
+	}
 }
 
 func writeCanaryHeaders(w http.ResponseWriter, mode string, backend core.BackendID, rollbackReason string) {

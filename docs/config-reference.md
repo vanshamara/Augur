@@ -85,6 +85,10 @@ pricing:
 
 Augur uses this table when a backend does not set explicit prices.
 
+Prices are in dollars per single token, not per thousand or per million tokens.
+Augur rejects negative prices and any price of one dollar or more per token,
+since a value that large is almost always the wrong unit.
+
 ## Routes
 
 ```yaml
@@ -346,6 +350,21 @@ budgets:
 
 These are request defaults used by the HTTP API. Tenant policy values can
 override them.
+
+When a request has a cost budget, Augur estimates the most each backend could
+cost before routing. The estimate uses the prompt token count, the request or
+backend max completion tokens, and the backend prices. Augur drops backends
+whose estimate is over the budget. If every candidate is over budget, the
+request fails with a clear over-budget error instead of calling an expensive
+backend. Backends without a configured price are not dropped, since their cost
+cannot be estimated.
+
+The HTTP response can include these cost headers:
+
+- `X-Augur-Estimated-Cost-USD`: the estimated max cost for the chosen backend.
+- `X-Augur-Cost-USD`: the realized cost once the backend responds. Streaming
+  responses only include the estimate, since realized cost is known after the
+  stream ends.
 
 ## Request Hints
 

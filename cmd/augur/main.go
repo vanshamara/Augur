@@ -71,6 +71,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Routes:          buildRouteRules(config.Routes),
 		Capabilities:    buildBackendCapabilities(config.Backends),
 		Canary:          buildCanaryConfig(config.Canary),
+		Pricing:         buildBackendPricing(config.Backends),
 		BackendTimeouts: buildBackendTimeouts(config.Backends),
 		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,
 		Filters:         filters,
@@ -354,6 +355,21 @@ func buildBackendCapabilities(backends []appconfig.Backend) map[core.BackendID][
 	out := make(map[core.BackendID][]core.RequestType, len(backends))
 	for _, backend := range backends {
 		out[backend.ID] = append([]core.RequestType(nil), backend.Capabilities...)
+	}
+	return out
+}
+
+func buildBackendPricing(backends []appconfig.Backend) map[core.BackendID]dataplane.BackendPrice {
+	out := make(map[core.BackendID]dataplane.BackendPrice, len(backends))
+	for _, backend := range backends {
+		if backend.InputCostPerToken == 0 && backend.OutputCostPerToken == 0 {
+			continue
+		}
+		out[backend.ID] = dataplane.BackendPrice{
+			InputPerToken:   backend.InputCostPerToken,
+			OutputPerToken:  backend.OutputCostPerToken,
+			MaxOutputTokens: backend.MaxCompletionTokens,
+		}
 	}
 	return out
 }

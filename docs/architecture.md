@@ -21,18 +21,20 @@ client
 4. `internal/dataplane` removes backends that do not support the request type.
 5. `internal/dataplane` applies filters such as active health state, circuit
    breaking, concurrency, tenant limits, hedging, and single flight.
-6. `internal/dataplane` applies deterministic canary assignment when a route has
+6. `internal/dataplane` estimates the max cost per backend and drops candidates
+   over the request cost budget.
+7. `internal/dataplane` applies deterministic canary assignment when a route has
    a canary rule and the canary backend is still eligible.
-7. A router chooses one backend from the remaining candidates.
-8. If the chosen backend fails with a retryable error before a complete
+8. A router chooses one backend from the remaining candidates.
+9. If the chosen backend fails with a retryable error before a complete
    response, `internal/dataplane` tries the route fallback chain.
-9. Shadow canaries call the candidate backend without returning that response.
-10. `internal/dataplane` applies any per-backend timeout, then
+10. Shadow canaries call the candidate backend without returning that response.
+11. `internal/dataplane` applies any per-backend timeout, then
     `internal/backend/openai` sends the attempt to the provider.
-11. Augur returns the response and sets `X-Augur-Backend`, `X-Augur-Route`,
-    `X-Augur-Fallback-Count`, `X-Augur-Attempted-Backends`, and canary headers
-    when available.
-12. If live learning is enabled, `internal/live` updates reward and quality
+12. Augur returns the response and sets `X-Augur-Backend`, `X-Augur-Route`,
+    `X-Augur-Fallback-Count`, `X-Augur-Attempted-Backends`, cost headers, and
+    canary headers when available.
+13. If live learning is enabled, `internal/live` updates reward and quality
     state.
 
 Route canary rollback uses error rate, latency regression, and health or circuit

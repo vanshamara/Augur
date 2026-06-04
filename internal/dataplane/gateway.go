@@ -42,6 +42,7 @@ type Config struct {
 	Routes          []RouteRule
 	Capabilities    map[core.BackendID][]core.RequestType
 	Canary          CanaryConfig
+	Pricing         map[core.BackendID]BackendPrice
 	BackendTimeouts map[core.BackendID]time.Duration
 	ActiveHealth    bool
 	Filters         []Filter
@@ -59,6 +60,7 @@ type Gateway struct {
 	routes          *RouteSelector
 	capabilities    map[core.BackendID]map[core.RequestType]bool
 	canaries        *CanaryTable
+	pricing         map[core.BackendID]BackendPrice
 	status          *backendStatusTable
 	timeouts        map[core.BackendID]time.Duration
 	activeHealth    bool
@@ -111,6 +113,7 @@ func New(config Config) (*Gateway, error) {
 		routes:          NewRouteSelector(config.Routes),
 		capabilities:    capabilities,
 		canaries:        NewCanaryTable(config.Canary),
+		pricing:         copyPricing(config.Pricing),
 		status:          newBackendStatusTable(ids, config.BackendTimeouts),
 		timeouts:        copyTimeouts(config.BackendTimeouts),
 		activeHealth:    config.ActiveHealth,
@@ -272,6 +275,10 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 		}
 	}
 	out := candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks}
+	out = g.applyBudget(req, out)
+	if out.Err != nil {
+		return out
+	}
 	return g.applyCanary(req, out, decision.Canary, canaryCandidates)
 }
 
@@ -636,6 +643,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	if resp.Backend == "" {
 		resp.Backend = id
 	}
+	if estimate, ok := g.estimateMaxCostUSD(req, id); ok {
+		resp.EstimatedCostUSD = estimate
+	}
 	resp = annotateCanaryResponse(resp, canary)
 	g.status.Observe(id, resp, err)
 	if shouldObserve(err) {
@@ -699,19 +709,21 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		g.observeStreamResponse(ctx, id, resp, err)
 		return nil, err
 	}
+	estimate, _ := g.estimateMaxCostUSD(req, id)
 	return &gatewayStream{
-		ctx:           ctx,
-		gateway:       g,
-		req:           req,
-		id:            id,
-		routeName:     routeName,
-		canary:        canary,
-		attempts:      append([]core.BackendID(nil), attempts...),
-		fallbackCount: fallbackCount,
-		stream:        stream,
-		release:       release,
-		cancel:        cancel,
-		hasTimeout:    hasTimeout,
+		ctx:              ctx,
+		gateway:          g,
+		req:              req,
+		id:               id,
+		routeName:        routeName,
+		canary:           canary,
+		attempts:         append([]core.BackendID(nil), attempts...),
+		fallbackCount:    fallbackCount,
+		estimatedCostUSD: estimate,
+		stream:           stream,
+		release:          release,
+		cancel:           cancel,
+		hasTimeout:       hasTimeout,
 	}, nil
 }
 
@@ -730,20 +742,21 @@ func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, 
 }
 
 type gatewayStream struct {
-	ctx           context.Context
-	gateway       *Gateway
-	req           core.Request
-	id            core.BackendID
-	routeName     string
-	canary        CanaryDecision
-	attempts      []core.BackendID
-	fallbackCount int
-	stream        core.Stream
-	release       Release
-	cancel        context.CancelFunc
-	hasTimeout    bool
-	observed      bool
-	closed        bool
+	ctx              context.Context
+	gateway          *Gateway
+	req              core.Request
+	id               core.BackendID
+	routeName        string
+	canary           CanaryDecision
+	attempts         []core.BackendID
+	fallbackCount    int
+	estimatedCostUSD float64
+	stream           core.Stream
+	release          Release
+	cancel           context.CancelFunc
+	hasTimeout       bool
+	observed         bool
+	closed           bool
 }
 
 func (s *gatewayStream) Recv() (core.StreamChunk, error) {
@@ -809,6 +822,10 @@ func (s *gatewayStream) AttemptedBackends() []core.BackendID {
 
 func (s *gatewayStream) FallbackCount() int {
 	return s.fallbackCount
+}
+
+func (s *gatewayStream) EstimatedCostUSD() float64 {
+	return s.estimatedCostUSD
 }
 
 func (s *gatewayStream) CanaryMode() string {

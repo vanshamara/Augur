@@ -679,6 +679,27 @@ func TestParseRejectsNegativeActiveHealthInterval(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNegativeBackendPrice(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a","input_cost_per_token":-0.001}]}`))
+	if err == nil {
+		t.Fatal("negative backend price should fail")
+	}
+}
+
+func TestParseRejectsPerTokenPriceInWrongUnit(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a","output_cost_per_token":2.5}]}`))
+	if err == nil {
+		t.Fatal("a price above one dollar per token should fail as a unit mistake")
+	}
+}
+
+func TestParseRejectsNegativePricingTablePrice(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"pricing":{"models":{"model-a":{"input_cost_per_token":-0.000001}}}}`))
+	if err == nil {
+		t.Fatal("negative pricing table price should fail")
+	}
+}
+
 func TestParseRejectsMissingJudgeModel(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"learning":{"judge":{"enabled":true}}}`))
 	if err == nil {
