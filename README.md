@@ -187,10 +187,10 @@ marks simple or spam-like prompts as cheap chat, and marks harder coding or
 reasoning prompts as higher-need requests. This classifier does not call a
 model, so it does not add routing cost.
 
-When a request carries a cost budget, Augur estimates the most each backend
-could cost before routing and drops the ones that would go over budget. If every
-backend is over budget, the request fails with a clear over-budget error instead
-of calling an expensive model.
+When a request carries a cost budget, Augur estimates the most each primary,
+fallback, or canary backend could cost before routing and drops the ones that
+would go over budget. If every backend is over budget, the request fails with a
+clear over-budget error instead of calling an expensive model.
 
 The request-aware example uses quality as a floor and then optimizes latency and
 cost among the feasible backends. This keeps cheaper models in play without

@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	CanaryModeLive   = "live"
-	CanaryModeShadow = "shadow"
+	CanaryModeLive                   = "live"
+	CanaryModeShadow                 = "shadow"
+	canaryRollbackBackendUnavailable = "backend_unavailable"
+	canaryRollbackOverBudget         = "over_budget"
 )
 
 type CanaryRule struct {

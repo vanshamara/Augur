@@ -141,6 +141,97 @@ func TestDecisionLogRecordsBudgetExclusionAndError(t *testing.T) {
 	}
 }
 
+func TestDecisionLogRecordsFallbackAttempts(t *testing.T) {
+	primary := &fakeBackend{
+		id:       "primary",
+		response: core.Response{Backend: "primary", Outcome: core.Outcome{Errored: true}},
+		err:      fakeStatusError{status: 503},
+	}
+	backup := &fakeBackend{id: "backup"}
+	log := NewDecisionLog(8)
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+		Decisions: log,
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req-fallback"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+
+	record, ok := gateway.DecisionRecord("req-fallback")
+	if !ok {
+		t.Fatal("expected a decision record for req-fallback")
+	}
+	if record.Selected != "backup" {
+		t.Fatalf("selected got %q", record.Selected)
+	}
+	if record.FallbackCount != 1 {
+		t.Fatalf("fallback count got %d", record.FallbackCount)
+	}
+	if len(record.AttemptedBackends) != 2 || record.AttemptedBackends[0] != "primary" || record.AttemptedBackends[1] != "backup" {
+		t.Fatalf("attempted backends got %v", record.AttemptedBackends)
+	}
+}
+
+func TestDecisionLogRecordsStreamingFallbackAttempts(t *testing.T) {
+	primary := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "primary"},
+		streamErr:   fakeStatusError{status: 503},
+	}
+	backup := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "backup"},
+		chunks:      []core.StreamChunk{{Delta: "ok", Done: true}},
+	}
+	log := NewDecisionLog(8)
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+		Decisions: log,
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req-stream-fallback"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	record, ok := gateway.DecisionRecord("req-stream-fallback")
+	if !ok {
+		t.Fatal("expected a decision record for req-stream-fallback")
+	}
+	if record.Selected != "backup" {
+		t.Fatalf("selected got %q", record.Selected)
+	}
+	if record.FallbackCount != 1 {
+		t.Fatalf("fallback count got %d", record.FallbackCount)
+	}
+	if len(record.AttemptedBackends) != 2 || record.AttemptedBackends[0] != "primary" || record.AttemptedBackends[1] != "backup" {
+		t.Fatalf("attempted backends got %v", record.AttemptedBackends)
+	}
+}
+
 func TestDecisionLogHashesCanaryStickyKey(t *testing.T) {
 	stable := instantBackend("stable")
 	candidate := instantBackend("candidate")
@@ -226,6 +317,24 @@ func TestDecisionLogEvictsOldestRecord(t *testing.T) {
 	}
 	if _, ok := log.Lookup("c"); !ok {
 		t.Fatal("record c should still be present")
+	}
+}
+
+func TestDecisionLogUpdatesDuplicateRequestIDInPlace(t *testing.T) {
+	log := NewDecisionLog(2)
+	log.put(&RouteDecisionRecord{RequestID: "a", Selected: "old"})
+	log.put(&RouteDecisionRecord{RequestID: "a", Selected: "new"})
+	log.put(&RouteDecisionRecord{RequestID: "b"})
+
+	record, ok := log.Lookup("a")
+	if !ok {
+		t.Fatal("record a should still be present")
+	}
+	if record.Selected != "new" {
+		t.Fatalf("record a selected got %q", record.Selected)
+	}
+	if recent := log.Recent(); len(recent) != 2 {
+		t.Fatalf("recent records got %v", recent)
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/vanshamara/Augur/internal/control"
@@ -845,6 +846,45 @@ func TestExampleConfigsLoad(t *testing.T) {
 	}
 }
 
+func TestReadmeRoutingExampleParses(t *testing.T) {
+	config, err := ParseYAML(readmeRoutingExample(t))
+	if err != nil {
+		t.Fatalf("parse README routing example: %v", err)
+	}
+	if len(config.Routes) != 3 {
+		t.Fatalf("README routing example routes got %+v", config.Routes)
+	}
+	if config.Router.Type != "cost_aware" {
+		t.Fatalf("README routing example router got %q", config.Router.Type)
+	}
+}
+
+func TestCostAwareExampleDemonstratesBudgetExclusion(t *testing.T) {
+	paths := []string{
+		"../../configs/cost-aware.example.json",
+		"../../configs/cost-aware.example.yaml",
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			config, err := LoadFile(path)
+			if err != nil {
+				t.Fatalf("load example config: %v", err)
+			}
+
+			cheap := backendByID(t, config, "cheap")
+			strong := backendByID(t, config, "strong")
+			cheapOutputCost := float64(config.Budgets.MaxCompletionTokens) * cheap.OutputCostPerToken
+			strongOutputCost := float64(config.Budgets.MaxCompletionTokens) * strong.OutputCostPerToken
+			if cheapOutputCost > config.Budgets.CostBudgetUSD {
+				t.Fatalf("cheap backend should fit the example budget, cost=%v budget=%v", cheapOutputCost, config.Budgets.CostBudgetUSD)
+			}
+			if strongOutputCost <= config.Budgets.CostBudgetUSD {
+				t.Fatalf("strong backend should exceed the example budget, cost=%v budget=%v", strongOutputCost, config.Budgets.CostBudgetUSD)
+			}
+		})
+	}
+}
+
 func exampleConfigPaths(t *testing.T) []string {
 	t.Helper()
 	patterns := []string{
@@ -861,4 +901,36 @@ func exampleConfigPaths(t *testing.T) []string {
 		paths = append(paths, matches...)
 	}
 	return paths
+}
+
+func readmeRoutingExample(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	text := string(data)
+	marker := "```yaml\nbackends:\n"
+	start := strings.Index(text, marker)
+	if start < 0 {
+		t.Fatal("README routing example not found")
+	}
+	start += len("```yaml\n")
+	rest := text[start:]
+	end := strings.Index(rest, "\n```")
+	if end < 0 {
+		t.Fatal("README routing example is missing closing fence")
+	}
+	return []byte(rest[:end])
+}
+
+func backendByID(t *testing.T, config App, id string) Backend {
+	t.Helper()
+	for _, backend := range config.Backends {
+		if string(backend.ID) == id {
+			return backend
+		}
+	}
+	t.Fatalf("backend %q not found", id)
+	return Backend{}
 }

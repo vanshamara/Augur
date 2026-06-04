@@ -1,8 +1,9 @@
 package dataplane
 
 import (
-	"hash/fnv"
-	"strconv"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"sync"
 
 	"github.com/vanshamara/Augur/internal/core"
@@ -12,19 +13,21 @@ import (
 // route candidate set, why each backend was dropped, the canary assignment, and
 // the backend Augur finally used. It never stores prompt text or API keys.
 type RouteDecisionRecord struct {
-	RequestID        string            `json:"request_id"`
-	TenantID         string            `json:"tenant_id,omitempty"`
-	RouteName        string            `json:"route_name,omitempty"`
-	RequestType      core.RequestType  `json:"request_type,omitempty"`
-	PromptTokens     int               `json:"prompt_tokens"`
-	LatencyBudgetMs  int               `json:"latency_budget_ms,omitempty"`
-	CostBudgetUSD    float64           `json:"cost_budget_usd,omitempty"`
-	Candidates       []core.BackendID  `json:"candidates"`
-	Excluded         []ExclusionRecord `json:"excluded,omitempty"`
-	Canary           CanaryRecord      `json:"canary"`
-	Selected         core.BackendID    `json:"selected,omitempty"`
-	EstimatedCostUSD float64           `json:"estimated_cost_usd,omitempty"`
-	Error            string            `json:"error,omitempty"`
+	RequestID         string            `json:"request_id"`
+	TenantID          string            `json:"tenant_id,omitempty"`
+	RouteName         string            `json:"route_name,omitempty"`
+	RequestType       core.RequestType  `json:"request_type,omitempty"`
+	PromptTokens      int               `json:"prompt_tokens"`
+	LatencyBudgetMs   int               `json:"latency_budget_ms,omitempty"`
+	CostBudgetUSD     float64           `json:"cost_budget_usd,omitempty"`
+	Candidates        []core.BackendID  `json:"candidates"`
+	Excluded          []ExclusionRecord `json:"excluded,omitempty"`
+	Canary            CanaryRecord      `json:"canary"`
+	Selected          core.BackendID    `json:"selected,omitempty"`
+	AttemptedBackends []core.BackendID  `json:"attempted_backends,omitempty"`
+	FallbackCount     int               `json:"fallback_count,omitempty"`
+	EstimatedCostUSD  float64           `json:"estimated_cost_usd,omitempty"`
+	Error             string            `json:"error,omitempty"`
 }
 
 // ExclusionRecord is one backend that a stage removed from the candidate set,
@@ -63,11 +66,22 @@ func (r *RouteDecisionRecord) finish(resp core.Response, err error) {
 	if resp.Backend != "" {
 		r.Selected = resp.Backend
 	}
+	if len(resp.AttemptedBackends) > 0 {
+		r.AttemptedBackends = append([]core.BackendID(nil), resp.AttemptedBackends...)
+	}
+	if resp.FallbackCount > 0 {
+		r.FallbackCount = resp.FallbackCount
+	}
 	if resp.EstimatedCostUSD > 0 {
 		r.EstimatedCostUSD = resp.EstimatedCostUSD
 	}
 	if err != nil {
 		r.Error = err.Error()
+		var metadata attemptMetadata
+		if len(r.AttemptedBackends) == 0 && errors.As(err, &metadata) {
+			r.AttemptedBackends = metadata.AttemptedBackends()
+			r.FallbackCount = metadata.FallbackCount()
+		}
 	}
 }
 
@@ -99,11 +113,16 @@ func (l *DecisionLog) put(record *RouteDecisionRecord) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	saved := record.clone()
+	if existing, ok := l.byID[saved.RequestID]; ok {
+		*existing = saved
+		return
+	}
 	if old := l.ids[l.next]; old != "" {
 		delete(l.byID, old)
 	}
-	l.ids[l.next] = record.RequestID
-	l.byID[record.RequestID] = record
+	l.ids[l.next] = saved.RequestID
+	l.byID[saved.RequestID] = &saved
 	l.next = (l.next + 1) % l.size
 }
 
@@ -118,7 +137,7 @@ func (l *DecisionLog) Lookup(requestID string) (RouteDecisionRecord, bool) {
 	if !ok {
 		return RouteDecisionRecord{}, false
 	}
-	return *record, true
+	return record.clone(), true
 }
 
 // Recent returns the stored records from oldest to newest.
@@ -137,15 +156,27 @@ func (l *DecisionLog) Recent() []RouteDecisionRecord {
 			continue
 		}
 		if record, ok := l.byID[id]; ok {
-			out = append(out, *record)
+			out = append(out, record.clone())
 		}
 	}
 	return out
 }
 
+type attemptMetadata interface {
+	AttemptedBackends() []core.BackendID
+	FallbackCount() int
+}
+
 type streamCostMetadata interface {
 	BackendID() core.BackendID
 	EstimatedCostUSD() float64
+}
+
+func (r RouteDecisionRecord) clone() RouteDecisionRecord {
+	r.Candidates = append([]core.BackendID(nil), r.Candidates...)
+	r.Excluded = append([]ExclusionRecord(nil), r.Excluded...)
+	r.AttemptedBackends = append([]core.BackendID(nil), r.AttemptedBackends...)
+	return r
 }
 
 // dropped returns the backends that were in before but not in after. Filters
@@ -171,7 +202,6 @@ func stickyKeyHash(req core.Request, rule CanaryRule) string {
 	if rule.Backend == "" {
 		return ""
 	}
-	hash := fnv.New64a()
-	hash.Write([]byte(stickyValue(req, rule.StickyKey)))
-	return strconv.FormatUint(hash.Sum64(), 16)
+	sum := sha256.Sum256([]byte(stickyValue(req, rule.StickyKey)))
+	return hex.EncodeToString(sum[:])
 }

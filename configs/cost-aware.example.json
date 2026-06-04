@@ -39,7 +39,7 @@
   },
   "budgets": {
     "latency_budget_ms": 1600,
-    "cost_budget_usd": 0.02,
+    "cost_budget_usd": 0.001,
     "max_completion_tokens": 512,
     "temperature": 0.2
   }

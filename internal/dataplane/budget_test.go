@@ -108,6 +108,53 @@ func TestGatewayKeepsBackendWithUnknownPrice(t *testing.T) {
 	}
 }
 
+func TestGatewaySkipsOverBudgetCanaryForOneRequest(t *testing.T) {
+	stable := &fakeBackend{id: "stable"}
+	candidate := &fakeBackend{id: "candidate"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 100,
+				},
+			},
+		},
+		Pricing: map[core.BackendID]BackendPrice{
+			"stable":    {InputPerToken: 0.00001, OutputPerToken: 0.00001},
+			"candidate": {InputPerToken: 0.001, OutputPerToken: 0.001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), budgetRequest(0.01))
+	if err != nil {
+		t.Fatalf("low-budget call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.CanaryRollback != canaryRollbackOverBudget {
+		t.Fatalf("low-budget response got %+v", resp)
+	}
+	if candidate.calls.Load() != 0 {
+		t.Fatalf("over-budget canary was called %d times", candidate.calls.Load())
+	}
+
+	req := budgetRequest(1)
+	req.ID = "high-budget"
+	resp, err = gateway.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("high-budget call: %v", err)
+	}
+	if resp.Backend != "candidate" || resp.CanaryMode != CanaryModeLive {
+		t.Fatalf("high-budget response got %+v", resp)
+	}
+}
+
 func TestGatewayShedsTenantOverCostLimit(t *testing.T) {
 	model := &fakeBackend{
 		id:       "a",

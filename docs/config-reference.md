@@ -222,7 +222,8 @@ data_plane:
 When enabled, Augur keeps the most recent routing decisions in memory. Each
 record holds the route name, the candidate set, the reason each backend was
 dropped, the canary assignment, and the backend Augur chose. It records prompt
-token counts and a hashed canary sticky key, never prompt text or API keys.
+token counts, fallback attempts, and a hashed canary sticky key, never prompt
+text or API keys.
 
 `GET /debug/decisions` returns the recent records. `GET
 /debug/decisions?request_id=ID` returns one record so you can explain why a
@@ -276,9 +277,10 @@ percentage rollout.
 
 Augur disables a route canary when the canary backend crosses the configured
 error rate threshold, shows a P95 latency regression against the stable backend,
-or becomes unavailable through health or circuit filters. If `canary.shadow` is
-true, Augur still sends stable responses to the client and records the shadow
-backend outcome separately.
+or becomes unavailable through health or circuit filters. A per-request cost
+budget can skip a canary for that request without disabling the route canary
+globally. If `canary.shadow` is true, Augur still sends stable responses to the
+client and records the shadow backend outcome separately.
 
 The HTTP response can include these headers:
 
@@ -379,13 +381,15 @@ budgets:
 These are request defaults used by the HTTP API. Tenant policy values can
 override them.
 
-When a request has a cost budget, Augur estimates the most each backend could
-cost before routing. The estimate uses the prompt token count, the request or
-backend max completion tokens, and the backend prices. Augur drops backends
-whose estimate is over the budget. If every candidate is over budget, the
-request fails with a clear over-budget error instead of calling an expensive
-backend. Backends without a configured price are not dropped, since their cost
-cannot be estimated.
+When a request has a cost budget, Augur estimates the most each primary,
+fallback, or canary backend could cost before routing. The estimate uses the
+prompt token count, the request or backend max completion tokens, and the
+backend prices. The HTTP API estimates prompt tokens locally from text length
+before routing, so leave margin in tight budgets. Augur drops backends whose
+estimate is over the budget. If every candidate is over budget, the request
+fails with a clear over-budget error instead of calling an expensive backend.
+Backends without a configured price are not dropped, since their cost cannot be
+estimated.
 
 The HTTP response can include these cost headers:
 

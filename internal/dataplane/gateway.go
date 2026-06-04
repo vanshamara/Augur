@@ -311,8 +311,16 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 	if out.Err != nil {
 		return out
 	}
+	canaryUnavailableReason := ""
+	if req.Features.CostBudget > 0 && len(canaryCandidates) > 0 {
+		beforeCanaryBudget := canaryCandidates
+		canaryCandidates = g.affordableBackends(req, canaryCandidates, req.Features.CostBudget)
+		if containsBackend(beforeCanaryBudget, decision.Canary.Backend) && !containsBackend(canaryCandidates, decision.Canary.Backend) {
+			canaryUnavailableReason = canaryRollbackOverBudget
+		}
+	}
 
-	out = g.applyCanary(req, out, decision.Canary, canaryCandidates)
+	out = g.applyCanary(req, out, decision.Canary, canaryCandidates, canaryUnavailableReason)
 	out.Record = record
 	g.recordCanary(record, req, decision.Canary, out.Canary)
 	return out
@@ -366,6 +374,10 @@ func (g *Gateway) storeStreamDecision(record *RouteDecisionRecord, stream core.S
 			resp.Backend = meta.BackendID()
 			resp.EstimatedCostUSD = meta.EstimatedCostUSD()
 		}
+		if meta, ok := stream.(attemptMetadata); ok {
+			resp.AttemptedBackends = meta.AttemptedBackends()
+			resp.FallbackCount = meta.FallbackCount()
+		}
 	}
 	record.finish(resp, err)
 	g.decisions.put(record)
@@ -382,7 +394,7 @@ func (g *Gateway) DecisionRecord(requestID string) (RouteDecisionRecord, bool) {
 	return g.decisions.Lookup(requestID)
 }
 
-func (g *Gateway) applyCanary(req core.Request, candidates candidateSet, rule CanaryRule, canaryCandidates []core.BackendID) candidateSet {
+func (g *Gateway) applyCanary(req core.Request, candidates candidateSet, rule CanaryRule, canaryCandidates []core.BackendID, unavailableReason string) candidateSet {
 	if rule.Backend == "" || !canaryAssigned(req, rule) {
 		return candidates
 	}
@@ -394,10 +406,16 @@ func (g *Gateway) applyCanary(req core.Request, candidates candidateSet, rule Ca
 		return candidates
 	}
 	if !containsBackend(canaryCandidates, rule.Backend) {
-		g.canaries.Disable(candidates.RouteName, "backend_unavailable")
+		reason := canaryRollbackBackendUnavailable
+		if unavailableReason != "" {
+			reason = unavailableReason
+		}
+		if reason == canaryRollbackBackendUnavailable {
+			g.canaries.Disable(candidates.RouteName, reason)
+		}
 		candidates.Canary = CanaryDecision{
 			Backend:        rule.Backend,
-			RollbackReason: "backend_unavailable",
+			RollbackReason: reason,
 		}
 		return candidates
 	}
