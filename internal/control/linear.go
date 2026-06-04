@@ -133,18 +133,21 @@ func applyObservationToSnapshot(current LinearSnapshot, observation LinearObserv
 	return next
 }
 
+// Predict reads the arm without changing it. It applies time decay as a factor
+// while reading, so the shared snapshot stays untouched and safe for concurrent
+// readers.
 func (s LinearSnapshot) Predict(id core.BackendID, features []float64, at time.Time, tau time.Duration, priorPrecision float64, initialMean float64, clip bool) Prediction {
 	arm, ok := s.Arms[id]
 	if !ok {
 		arm = newArm(len(features), at)
 	}
-	arm = decayArm(arm, at, tau)
+	factor := decayFactor(arm, at, tau)
 
 	mean := 0.0
 	variance := 0.0
 	for i := 0; i < len(features) && i < len(arm.Precision); i++ {
-		denominator := priorPrecision + arm.Precision[i]
-		numerator := arm.Target[i]
+		denominator := priorPrecision + arm.Precision[i]*factor
+		numerator := arm.Target[i] * factor
 		if i == 0 {
 			numerator += priorPrecision * initialMean
 		}
@@ -155,21 +158,24 @@ func (s LinearSnapshot) Predict(id core.BackendID, features []float64, at time.T
 	if clip {
 		mean = clamp01(mean)
 	}
-	return Prediction{Mean: mean, Variance: variance, Count: arm.Updates}
+	return Prediction{Mean: mean, Variance: variance, Count: arm.Updates * factor}
 }
 
+// Sample reads the arm without changing it. Like Predict, it applies time decay
+// as a factor while reading so concurrent routing reads never mutate the shared
+// snapshot.
 func (s LinearSnapshot) Sample(id core.BackendID, features []float64, at time.Time, tau time.Duration, priorPrecision float64, initialMean float64, deriver *rng.Deriver, keys ...uint64) float64 {
 	arm, ok := s.Arms[id]
 	if !ok {
 		arm = newArm(len(features), at)
 	}
-	arm = decayArm(arm, at, tau)
+	factor := decayFactor(arm, at, tau)
 
 	generator := deriver.Rand(keys...)
 	score := 0.0
 	for i := 0; i < len(features) && i < len(arm.Precision); i++ {
-		denominator := priorPrecision + arm.Precision[i]
-		numerator := arm.Target[i]
+		denominator := priorPrecision + arm.Precision[i]*factor
+		numerator := arm.Target[i] * factor
 		if i == 0 {
 			numerator += priorPrecision * initialMean
 		}
@@ -215,11 +221,22 @@ func newArm(dimension int, at time.Time) LinearArm {
 	}
 }
 
-func decayArm(arm LinearArm, at time.Time, tau time.Duration) LinearArm {
+// decayFactor returns the time decay multiplier for an arm at a given time. It
+// is read-only, so the read path can apply decay without mutating shared state.
+func decayFactor(arm LinearArm, at time.Time, tau time.Duration) float64 {
 	if arm.Last.IsZero() || !at.After(arm.Last) {
+		return 1
+	}
+	return math.Exp(-at.Sub(arm.Last).Seconds() / tau.Seconds())
+}
+
+// decayArm applies the decay factor in place. The caller must own the arm, so
+// this is only used on the write path where the arm is already a fresh clone.
+func decayArm(arm LinearArm, at time.Time, tau time.Duration) LinearArm {
+	factor := decayFactor(arm, at, tau)
+	if factor == 1 {
 		return arm
 	}
-	factor := math.Exp(-at.Sub(arm.Last).Seconds() / tau.Seconds())
 	for i := range arm.Precision {
 		arm.Precision[i] *= factor
 		arm.Target[i] *= factor

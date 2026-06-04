@@ -1,11 +1,47 @@
 package control
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/vanshamara/Augur/internal/core"
+	"github.com/vanshamara/Augur/internal/rng"
 )
+
+// TestLinearModelReadsAreSafeUnderConcurrentUpdates mirrors the live gateway,
+// where one request samples the model while another request's observation is
+// being applied. Run with -race to catch read-path mutation of shared state.
+func TestLinearModelReadsAreSafeUnderConcurrentUpdates(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	model := NewLinearModel(LinearConfig{
+		Backends:       []core.BackendID{"a", "b"},
+		Dimension:      FeatureDimension,
+		Start:          start,
+		Tau:            time.Minute,
+		PriorPrecision: 1,
+	})
+	defer model.Close()
+
+	deriver := rng.NewDeriver(1)
+	features := EncodeFeatures(request("req"))
+
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			base := start.Add(time.Duration(g) * time.Second)
+			for i := 0; i < 300; i++ {
+				at := base.Add(time.Duration(i) * time.Millisecond)
+				model.Sample("a", features, at, deriver, uint64(g), uint64(i))
+				model.Predict("a", features, at)
+				model.Update(LinearObservation{Backend: "a", Features: features, Value: 1, Weight: 1, At: at})
+			}
+		}(g)
+	}
+	wg.Wait()
+}
 
 func TestLinearModelDecaysDelayedObservationFromDecisionTime(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
