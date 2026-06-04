@@ -10,11 +10,15 @@ openai:
 backends:
   - id: "fast"
     model: "your-fast-model-id"
+    health_path: "/models"
+    timeout: "10s"
     input_cost_per_token: 0.0
     output_cost_per_token: 0.0
     max_completion_tokens: 512
   - id: "stable"
     model: "your-stable-model-id"
+    health_path: "/models"
+    timeout: "10s"
     input_cost_per_token: 0.0
     output_cost_per_token: 0.0
     max_completion_tokens: 512
@@ -44,6 +48,12 @@ data_plane:
   single_flight:
     enabled: true
     key: "prompt"
+  health_check:
+    enabled: true
+    interval: "5s"
+    timeout: "2s"
+    failure_threshold: 2
+    success_threshold: 1
 learning:
   enabled: true
   tau: "10m"

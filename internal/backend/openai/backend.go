@@ -14,6 +14,7 @@ type Config struct {
 	ID                  core.BackendID
 	Model               string
 	Client              *openaiapi.Client
+	HealthPath          string
 	InputCostPerToken   float64
 	OutputCostPerToken  float64
 	MaxCompletionTokens int
@@ -23,6 +24,7 @@ type Backend struct {
 	id                  core.BackendID
 	model               string
 	client              *openaiapi.Client
+	healthPath          string
 	inputCostPerToken   float64
 	outputCostPerToken  float64
 	maxCompletionTokens int
@@ -45,6 +47,7 @@ func New(config Config) (*Backend, error) {
 		id:                  config.ID,
 		model:               config.Model,
 		client:              config.Client,
+		healthPath:          strings.TrimSpace(config.HealthPath),
 		inputCostPerToken:   config.InputCostPerToken,
 		outputCostPerToken:  config.OutputCostPerToken,
 		maxCompletionTokens: config.MaxCompletionTokens,
@@ -53,6 +56,10 @@ func New(config Config) (*Backend, error) {
 
 func (b *Backend) ID() core.BackendID {
 	return b.id
+}
+
+func (b *Backend) Check(ctx context.Context) error {
+	return b.client.HealthCheck(ctx, b.healthPath)
 }
 
 func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, error) {

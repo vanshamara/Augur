@@ -33,6 +33,7 @@ type Config struct {
 	Now            func() time.Time
 	NewID          func() string
 	Ready          ReadyFunc
+	BackendStatus  func() []dataplane.BackendStatus
 	AuthKeys       []string
 	Defaults       RequestDefaults
 	TenantHeader   string
@@ -62,6 +63,7 @@ type Server struct {
 	now            func() time.Time
 	newID          func() string
 	ready          ReadyFunc
+	backendStatus  func() []dataplane.BackendStatus
 	authKeys       []string
 	defaults       RequestDefaults
 	tenantHeader   string
@@ -104,6 +106,7 @@ func New(config Config) (*Server, error) {
 		now:            config.Now,
 		newID:          config.NewID,
 		ready:          config.Ready,
+		backendStatus:  config.BackendStatus,
 		authKeys:       cleanAuthKeys(config.AuthKeys),
 		defaults:       config.Defaults,
 		tenantHeader:   config.TenantHeader,
@@ -114,6 +117,7 @@ func New(config Config) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealth)
 	mux.HandleFunc("/readyz", server.handleReady)
+	mux.HandleFunc("/debug/backends", server.handleAuthenticatedBackendDebug)
 	mux.HandleFunc("/v1/chat/completions", server.handleAuthenticatedChatCompletions)
 	server.mux = mux
 	return server, nil
@@ -141,6 +145,27 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (s *Server) handleAuthenticatedBackendDebug(w http.ResponseWriter, r *http.Request) {
+	if !s.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "valid API key is required")
+		return
+	}
+	s.handleBackendDebug(w, r)
+}
+
+func (s *Server) handleBackendDebug(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		return
+	}
+	statuses := []dataplane.BackendStatus{}
+	if s.backendStatus != nil {
+		statuses = s.backendStatus()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"backends": statuses})
 }
 
 func (s *Server) handleAuthenticatedChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -745,7 +770,8 @@ func writeGatewayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable", err.Error())
 	case errors.Is(err, dataplane.ErrAllBackendsFailed):
 		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded),
+		errors.Is(err, dataplane.ErrBackendTimeout):
 		writeError(w, http.StatusGatewayTimeout, "timeout", err.Error())
 	default:
 		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())

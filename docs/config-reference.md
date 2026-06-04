@@ -55,6 +55,8 @@ backends:
   - id: "fast"
     model: "your-model-id"
     capabilities: ["chat", "reasoning", "coding"]
+    health_path: "/healthz"
+    timeout: "10s"
     input_cost_per_token: 0.0
     output_cost_per_token: 0.0
     max_completion_tokens: 512
@@ -65,6 +67,9 @@ backends:
 - `capabilities`: optional list of supported request types. Supported values are
   `chat`, `reasoning`, `coding`, and `embedding`. If omitted or empty, the
   backend is treated as compatible with all current request types.
+- `health_path`: optional provider health endpoint path. It is called with `GET`
+  during active checks. Leave it empty when the provider has no cheap health path.
+- `timeout`: optional per-backend request timeout. It applies before fallback.
 - cost fields: USD per token. These override `pricing.models`.
 - `max_completion_tokens`: backend default max output token count.
 
@@ -179,12 +184,27 @@ data_plane:
   single_flight:
     enabled: true
     key: "prompt"
+  health_check:
+    enabled: true
+    interval: "5s"
+    timeout: "2s"
+    failure_threshold: 2
+    success_threshold: 1
 ```
 
 Filters run in the order listed. Supported filters are `tenant`, `health`,
 `circuit`, and `concurrency`.
 
 Hedging is disabled unless `hedge.enabled` is true.
+
+Active health checks are disabled unless `health_check.enabled` is true. They
+require the `health` filter in `filters`. A failed check marks the backend
+unhealthy after `failure_threshold` consecutive failures. A recovered backend is
+eligible again after `success_threshold` consecutive successes.
+
+`GET /debug/backends` returns health, circuit state, concurrency, P95 latency,
+error rate, and timeout details for each backend. It uses the same auth settings
+as `/v1/chat/completions`.
 
 ## Learning
 
@@ -238,7 +258,7 @@ The HTTP response can include these headers:
 
 Routes can define ordered fallback chains with `fallbacks`.
 
-Augur retries a fallback when the first backend fails with a timeout, 429, 5xx,
+Augur retries a fallback when the first backend fails with a backend timeout, 429, 5xx,
 transport error, load shed, missing backend, or health-filtered primary pool. It
 does not retry invalid client requests, auth failures, unsupported task types, or
 client cancellation.

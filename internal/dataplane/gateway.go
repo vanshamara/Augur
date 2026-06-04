@@ -24,6 +24,7 @@ var (
 	ErrLoadShed               = errors.New("request shed by data plane")
 	ErrMissing                = errors.New("backend is not registered")
 	ErrStreaming              = errors.New("backend does not support streaming")
+	ErrBackendTimeout         = errors.New("backend timeout")
 )
 
 type HedgeConfig struct {
@@ -41,6 +42,8 @@ type Config struct {
 	Routes          []RouteRule
 	Capabilities    map[core.BackendID][]core.RequestType
 	Canary          CanaryConfig
+	BackendTimeouts map[core.BackendID]time.Duration
+	ActiveHealth    bool
 	Filters         []Filter
 	Clock           clock.Clock
 	Hedge           HedgeConfig
@@ -56,6 +59,9 @@ type Gateway struct {
 	routes          *RouteSelector
 	capabilities    map[core.BackendID]map[core.RequestType]bool
 	canaries        *CanaryTable
+	status          *backendStatusTable
+	timeouts        map[core.BackendID]time.Duration
+	activeHealth    bool
 	filters         []Filter
 	clock           clock.Clock
 	hedge           HedgeConfig
@@ -105,6 +111,9 @@ func New(config Config) (*Gateway, error) {
 		routes:          NewRouteSelector(config.Routes),
 		capabilities:    capabilities,
 		canaries:        NewCanaryTable(config.Canary),
+		status:          newBackendStatusTable(ids, config.BackendTimeouts),
+		timeouts:        copyTimeouts(config.BackendTimeouts),
+		activeHealth:    config.ActiveHealth,
 		filters:         append([]Filter(nil), config.Filters...),
 		clock:           config.Clock,
 		hedge:           config.Hedge,
@@ -113,6 +122,42 @@ func New(config Config) (*Gateway, error) {
 		singleFlightKey: config.SingleFlightKey,
 		observer:        config.Observer,
 	}, nil
+}
+
+func (g *Gateway) Ready() bool {
+	for _, status := range g.BackendStatus() {
+		if status.Healthy && status.CircuitMode != "open" {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *Gateway) BackendStatus() []BackendStatus {
+	out := make([]BackendStatus, 0, len(g.ids))
+	for _, id := range g.ids {
+		status := g.status.Snapshot(id)
+		status.Healthy = true
+		status.ActiveHealthConfigured = g.activeHealth
+		for _, filter := range g.filters {
+			switch typed := filter.(type) {
+			case *HealthFilter:
+				health := typed.Status(id)
+				status.Healthy = health.Healthy
+				status.LastHealthCheck = health.LastChecked
+				status.HealthError = health.LastError
+				status.ConsecutiveFailures = health.ConsecutiveFailures
+				status.ConsecutiveSuccesses = health.ConsecutiveSuccesses
+			case *CircuitBreaker:
+				status.CircuitMode = typed.Mode(id)
+			case *AdaptiveLimiter:
+				status.ConcurrencyLimit = typed.Limit(id)
+				status.ConcurrencyInFlight = typed.InFlight(id)
+			}
+		}
+		out = append(out, status)
+	}
+	return out
 }
 
 // Call routes one request through the filter chain and backend fleet.
@@ -556,6 +601,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	if !ok {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		resp = annotateCanaryResponse(resp, canary)
+		g.status.Observe(id, resp, ErrLoadShed)
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		g.canaries.Observe(resp, ErrLoadShed)
 		return resp, ErrLoadShed
@@ -566,12 +612,18 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	if b == nil {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		resp = annotateCanaryResponse(resp, canary)
+		g.status.Observe(id, resp, ErrMissing)
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		g.canaries.Observe(resp, ErrMissing)
 		return resp, ErrMissing
 	}
 
-	resp, err := b.Call(ctx, req)
+	callCtx, cancel, hasTimeout := g.backendContext(ctx, id)
+	resp, err := b.Call(callCtx, req)
+	cancel()
+	if hasTimeout && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		err = ErrBackendTimeout
+	}
 	if resp.RequestID == "" {
 		resp.RequestID = req.ID
 	}
@@ -585,6 +637,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 		resp.Backend = id
 	}
 	resp = annotateCanaryResponse(resp, canary)
+	g.status.Observe(id, resp, err)
 	if shouldObserve(err) {
 		if err == nil {
 			g.router.Observe(ctx, id, resp)
@@ -606,6 +659,7 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	if !ok {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		resp = annotateCanaryResponse(resp, canary)
+		g.status.Observe(id, resp, ErrLoadShed)
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
 		g.canaries.Observe(resp, ErrLoadShed)
 		return nil, ErrLoadShed
@@ -616,6 +670,7 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		release()
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		resp = annotateCanaryResponse(resp, canary)
+		g.status.Observe(id, resp, ErrMissing)
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
 		g.canaries.Observe(resp, ErrMissing)
 		return nil, ErrMissing
@@ -625,14 +680,20 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		release()
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
 		resp = annotateCanaryResponse(resp, canary)
+		g.status.Observe(id, resp, ErrStreaming)
 		g.observer.RecordResponse(ctx, resp, ErrStreaming)
 		g.canaries.Observe(resp, ErrStreaming)
 		return nil, ErrStreaming
 	}
 
-	stream, err := streamBackend.Stream(ctx, req)
+	streamCtx, cancel, hasTimeout := g.backendContext(ctx, id)
+	stream, err := streamBackend.Stream(streamCtx, req)
 	if err != nil {
+		cancel()
 		release()
+		if hasTimeout && errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			err = ErrBackendTimeout
+		}
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id, Outcome: core.Outcome{Errored: true}}
 		resp = annotateCanaryResponse(resp, canary)
 		g.observeStreamResponse(ctx, id, resp, err)
@@ -649,10 +710,13 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		fallbackCount: fallbackCount,
 		stream:        stream,
 		release:       release,
+		cancel:        cancel,
+		hasTimeout:    hasTimeout,
 	}, nil
 }
 
 func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, resp core.Response, err error) {
+	g.status.Observe(id, resp, err)
 	if shouldObserve(err) {
 		if err == nil {
 			g.router.Observe(ctx, id, resp)
@@ -676,6 +740,8 @@ type gatewayStream struct {
 	fallbackCount int
 	stream        core.Stream
 	release       Release
+	cancel        context.CancelFunc
+	hasTimeout    bool
 	observed      bool
 	closed        bool
 }
@@ -697,6 +763,9 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	chunk = annotateCanaryChunk(chunk, s.canary)
 	chunk = annotateStreamChunk(chunk, s.attempts, s.fallbackCount)
 	if err != nil {
+		if s.hasTimeout && errors.Is(err, context.DeadlineExceeded) && s.ctx.Err() == nil {
+			err = ErrBackendTimeout
+		}
 		if !errors.Is(err, io.EOF) {
 			resp := core.Response{RequestID: s.req.ID, TenantID: s.req.TenantID, RouteName: s.routeName, Backend: s.id, Outcome: core.Outcome{Errored: true}}
 			s.observe(resp, err)
@@ -768,6 +837,9 @@ func (s *gatewayStream) closeRelease() {
 	}
 	s.closed = true
 	s.release()
+	if s.cancel != nil {
+		s.cancel()
+	}
 }
 
 func (g *Gateway) acquire(req core.Request, id core.BackendID) (Release, bool) {
@@ -783,6 +855,15 @@ func (g *Gateway) acquire(req core.Request, id core.BackendID) (Release, bool) {
 	return func() {
 		releaseAll(releases)
 	}, true
+}
+
+func (g *Gateway) backendContext(ctx context.Context, id core.BackendID) (context.Context, context.CancelFunc, bool) {
+	timeout := g.timeouts[id]
+	if timeout <= 0 {
+		return ctx, func() {}, false
+	}
+	next, cancel := context.WithTimeout(ctx, timeout)
+	return next, cancel, true
 }
 
 func releaseAll(releases []Release) {

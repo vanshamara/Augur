@@ -111,6 +111,11 @@ chosen backend fails with a retryable error before a complete response.
 Routes can define `canary` for deterministic rollout. Use `shadow: true` when
 you want to call the candidate backend without returning its response.
 
+Use `data_plane.health_check.enabled: true` with the `health` filter to mark dead
+backends before user traffic reaches them. Set `backends[].health_path` only when
+the provider has a cheap endpoint for health checks. Set `backends[].timeout` to
+cap slow attempts before fallback.
+
 ## Runtime State
 
 If `learning.persistence.enabled` is true, Augur writes learned reward and
@@ -130,8 +135,11 @@ responses, or API keys.
 
 - `GET /healthz`: process is alive
 - `GET /readyz`: gateway is ready
+- `GET /debug/backends`: backend health, circuit, latency, and error window state
 
 Use `/readyz` for load balancer readiness checks.
+Use `/debug/backends` for operator checks. It follows gateway auth when auth is
+enabled.
 
 ## Auth
 
@@ -179,6 +187,5 @@ See [Config reference](config-reference.md) for fields.
 ## Current Gaps
 
 - TLS termination must be handled outside Augur.
-- Active health checks are not included.
 - Kubernetes manifests are not included.
 - Dashboards and alerts are not included.

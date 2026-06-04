@@ -25,7 +25,8 @@ Built or mostly built:
 - backend capability filtering for chat, reasoning, coding, and embedding
 - route-specific fallback chains for retryable upstream failures
 - deterministic canary percentage rollout and shadow mode
-- health, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
+- active health checks, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
+- backend debug output for health, circuit state, latency window, and error rate
 - OpenAI-compatible backend adapter
 - streaming responses
 - optional gateway auth
@@ -39,14 +40,12 @@ Built or mostly built:
 
 Partial:
 
-- health filtering and circuit breaking exist, but active health checks are not
-  built yet
+- operator visibility is JSON debug output only. There is no bundled dashboard.
 
 Not included:
 
 - managed hosting
 - built-in TLS
-- active health checking
 - Kubernetes manifests
 - production dashboards
 - real traffic tuning for your workload

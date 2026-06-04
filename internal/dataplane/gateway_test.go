@@ -25,7 +25,9 @@ type fakeBackend struct {
 	delay    time.Duration
 	response core.Response
 	err      error
+	checkErr error
 	calls    atomic.Int64
+	checks   atomic.Int64
 	cancels  atomic.Int64
 }
 
@@ -51,6 +53,11 @@ func (f *fakeBackend) Call(ctx context.Context, req core.Request) (core.Response
 		resp.Backend = f.id
 	}
 	return resp, f.err
+}
+
+func (f *fakeBackend) Check(ctx context.Context) error {
+	f.checks.Add(1)
+	return f.checkErr
 }
 
 type fakeStreamBackend struct {
@@ -168,6 +175,74 @@ func TestHealthFilterRemovesUnhealthyBackend(t *testing.T) {
 	}
 	if resp.Backend != "b" {
 		t.Fatalf("expected healthy backend b, got %s", resp.Backend)
+	}
+}
+
+func TestActiveHealthCheckTransitions(t *testing.T) {
+	model := &fakeBackend{id: "a", checkErr: errors.New("down")}
+	health := NewHealthFilter([]core.BackendID{"a"})
+	active := NewActiveHealth(ActiveHealthConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 2,
+		Timeout:          time.Second,
+	}, health, []backend.Backend{model})
+
+	active.CheckOnce(context.Background())
+	if !health.Healthy("a") {
+		t.Fatal("one failed check should not cross the threshold")
+	}
+	active.CheckOnce(context.Background())
+	if health.Healthy("a") {
+		t.Fatal("two failed checks should mark backend unhealthy")
+	}
+
+	model.checkErr = nil
+	active.CheckOnce(context.Background())
+	if health.Healthy("a") {
+		t.Fatal("one recovered check should not cross the success threshold")
+	}
+	active.CheckOnce(context.Background())
+	if !health.Healthy("a") {
+		t.Fatal("two recovered checks should mark backend healthy")
+	}
+	status := health.Status("a")
+	if status.ConsecutiveSuccesses != 2 || status.ConsecutiveFailures != 0 {
+		t.Fatalf("health counters got %+v", status)
+	}
+}
+
+func TestRecoveredBackendReentersAfterActiveHealth(t *testing.T) {
+	recovered := &fakeBackend{id: "recovered", checkErr: errors.New("down")}
+	backup := &fakeBackend{id: "backup"}
+	health := NewHealthFilter([]core.BackendID{"recovered", "backup"})
+	active := NewActiveHealth(ActiveHealthConfig{FailureThreshold: 1, SuccessThreshold: 1}, health, []backend.Backend{recovered})
+	active.CheckOnce(context.Background())
+
+	gateway, err := New(Config{
+		Router:   router.NewStatic("recovered"),
+		Backends: []backend.Backend{recovered, backup},
+		Filters:  []Filter{health},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req-1"})
+	if err != nil {
+		t.Fatalf("backup call: %v", err)
+	}
+	if resp.Backend != "backup" {
+		t.Fatalf("unhealthy backend should be skipped, got %+v", resp)
+	}
+
+	recovered.checkErr = nil
+	active.CheckOnce(context.Background())
+	resp, err = gateway.Call(context.Background(), core.Request{ID: "req-2"})
+	if err != nil {
+		t.Fatalf("recovered call: %v", err)
+	}
+	if resp.Backend != "recovered" {
+		t.Fatalf("recovered backend should re-enter, got %+v", resp)
 	}
 }
 
@@ -631,6 +706,108 @@ func TestGatewayFallsBackOnTimeout(t *testing.T) {
 	}
 	if len(resp.AttemptedBackends) != 2 || resp.AttemptedBackends[0] != "primary" || resp.AttemptedBackends[1] != "backup" {
 		t.Fatalf("attempts got %+v", resp.AttemptedBackends)
+	}
+}
+
+func TestGatewayAppliesBackendTimeout(t *testing.T) {
+	primary := &fakeBackend{id: "primary", delay: 50 * time.Millisecond}
+	backup := &fakeBackend{id: "backup"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("primary"),
+		Backends: []backend.Backend{primary, backup},
+		BackendTimeouts: map[core.BackendID]time.Duration{
+			"primary": time.Millisecond,
+		},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"primary"},
+				Fallbacks:  []core.BackendID{"backup"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "backup" || primary.cancels.Load() == 0 {
+		t.Fatalf("timeout fallback got resp=%+v cancels=%d", resp, primary.cancels.Load())
+	}
+	statuses := gateway.BackendStatus()
+	if statuses[0].BackendTimeoutMs != 1 || statuses[0].ErrorRate == 0 {
+		t.Fatalf("timeout status got %+v", statuses[0])
+	}
+}
+
+func TestSlowBackendLosesTrafficOverTime(t *testing.T) {
+	slow := &fakeBackend{
+		id: "slow",
+		response: core.Response{
+			Outcome: core.Outcome{LatencyMs: 1000},
+		},
+	}
+	fast := &fakeBackend{
+		id: "fast",
+		response: core.Response{
+			Outcome: core.Outcome{LatencyMs: 20},
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewEWMA([]core.BackendID{"slow", "fast"}, 1),
+		Backends: []backend.Backend{slow, fast},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"slow", "fast"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	for i := 0; i < 8; i++ {
+		_, err := gateway.Call(context.Background(), core.Request{ID: "req-" + itoa(i)})
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+	}
+	if fast.calls.Load() <= slow.calls.Load() {
+		t.Fatalf("slow backend should lose traffic, slow=%d fast=%d", slow.calls.Load(), fast.calls.Load())
+	}
+}
+
+func TestBackendStatusIncludesCircuitAndWindow(t *testing.T) {
+	failing := &fakeBackend{id: "failing", err: fakeStatusError{status: 500}}
+	circuit := NewCircuitBreaker([]core.BackendID{"failing"}, CircuitConfig{FailureThreshold: 1})
+	gateway, err := New(Config{
+		Router:   router.NewStatic("failing"),
+		Backends: []backend.Backend{failing},
+		Filters:  []Filter{circuit},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err == nil {
+		t.Fatal("failing backend should return an error")
+	}
+
+	statuses := gateway.BackendStatus()
+	if len(statuses) != 1 {
+		t.Fatalf("statuses got %+v", statuses)
+	}
+	status := statuses[0]
+	if status.CircuitMode != "open" || status.Samples != 1 || status.ErrorRate != 1 {
+		t.Fatalf("backend status got %+v", status)
+	}
+	if status.LastError == "" {
+		t.Fatalf("backend status should include last error: %+v", status)
 	}
 }
 
@@ -1370,6 +1547,38 @@ func TestGatewayDoesNotFallbackAfterStreamStarts(t *testing.T) {
 	}
 	if backup.calls.Load() != 0 {
 		t.Fatalf("backup should not be called after stream starts, got %d", backup.calls.Load())
+	}
+}
+
+func TestGatewayStreamRecordsBackendTimeout(t *testing.T) {
+	model := &fakeStreamBackend{
+		fakeBackend: &fakeBackend{id: "streamer"},
+		recvErr:     context.DeadlineExceeded,
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("streamer"),
+		Backends: []backend.Backend{model},
+		BackendTimeouts: map[core.BackendID]time.Duration{
+			"streamer": time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	stream, err := gateway.Stream(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	_, err = stream.Recv()
+	if !errors.Is(err, ErrBackendTimeout) {
+		t.Fatalf("stream timeout got %v", err)
+	}
+	statuses := gateway.BackendStatus()
+	if statuses[0].ErrorRate != 1 || statuses[0].LastError != ErrBackendTimeout.Error() {
+		t.Fatalf("stream timeout status got %+v", statuses[0])
 	}
 }
 

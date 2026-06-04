@@ -71,6 +71,8 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Routes:          buildRouteRules(config.Routes),
 		Capabilities:    buildBackendCapabilities(config.Backends),
 		Canary:          buildCanaryConfig(config.Canary),
+		BackendTimeouts: buildBackendTimeouts(config.Backends),
+		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
@@ -79,6 +81,12 @@ func run(ctx context.Context, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	stopHealth, err := startActiveHealthChecks(ctx, config.DataPlane.HealthCheck, filters, backends)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
+
 	servingGateway, err := buildLiveGateway(config, gateway, routing.Bandit, client)
 	if err != nil {
 		return err
@@ -94,8 +102,9 @@ func run(ctx context.Context, getenv func(string) string) error {
 		TenantDefaults: tenantRequestDefaults(config),
 		MaxBodyBytes:   config.Server.MaxBodyBytes,
 		Ready: func(ctx context.Context) bool {
-			return len(backends) > 0
+			return gateway.Ready()
 		},
+		BackendStatus: gateway.BackendStatus,
 	})
 	if err != nil {
 		return err
@@ -199,6 +208,7 @@ func buildBackends(specs []appconfig.Backend, client *openaiapi.Client) ([]backe
 			ID:                  spec.ID,
 			Model:               spec.Model,
 			Client:              client,
+			HealthPath:          spec.HealthPath,
 			InputCostPerToken:   spec.InputCostPerToken,
 			OutputCostPerToken:  spec.OutputCostPerToken,
 			MaxCompletionTokens: spec.MaxCompletionTokens,
@@ -346,6 +356,43 @@ func buildBackendCapabilities(backends []appconfig.Backend) map[core.BackendID][
 		out[backend.ID] = append([]core.RequestType(nil), backend.Capabilities...)
 	}
 	return out
+}
+
+func buildBackendTimeouts(backends []appconfig.Backend) map[core.BackendID]time.Duration {
+	out := make(map[core.BackendID]time.Duration, len(backends))
+	for _, backend := range backends {
+		if backend.Timeout.Duration > 0 {
+			out[backend.ID] = backend.Timeout.Duration
+		}
+	}
+	return out
+}
+
+func startActiveHealthChecks(ctx context.Context, config appconfig.HealthCheck, filters []dataplane.Filter, backends []backend.Backend) (func(), error) {
+	if !config.Enabled {
+		return func() {}, nil
+	}
+	health := findHealthFilter(filters)
+	if health == nil {
+		return nil, errors.New("data_plane health_check requires the health filter")
+	}
+	active := dataplane.NewActiveHealth(dataplane.ActiveHealthConfig{
+		Interval:         config.Interval.Duration,
+		Timeout:          config.Timeout.Duration,
+		FailureThreshold: config.FailureThreshold,
+		SuccessThreshold: config.SuccessThreshold,
+	}, health, backends)
+	return active.Start(ctx), nil
+}
+
+func findHealthFilter(filters []dataplane.Filter) *dataplane.HealthFilter {
+	for _, filter := range filters {
+		health, ok := filter.(*dataplane.HealthFilter)
+		if ok {
+			return health
+		}
+	}
+	return nil
 }
 
 func buildCanaryConfig(config appconfig.Canary) dataplane.CanaryConfig {

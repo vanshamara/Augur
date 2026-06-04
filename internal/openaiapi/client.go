@@ -201,6 +201,31 @@ func (c *Client) ChatCompletionStream(ctx context.Context, body ChatCompletionRe
 	return &ChatCompletionStream{body: resp.Body, reader: bufio.NewReader(resp.Body)}, nil
 }
 
+func (c *Client) HealthCheck(ctx context.Context, path string) error {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if path == "" {
+		return nil
+	}
+
+	endpoint := c.baseURL.JoinPath(strings.Split(path, "/")...)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{Status: resp.StatusCode}
+	}
+	return nil
+}
+
 func (s *ChatCompletionStream) Recv() (ChatCompletionChunk, error) {
 	if s.done {
 		return ChatCompletionChunk{}, io.EOF

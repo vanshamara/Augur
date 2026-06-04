@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vanshamara/Augur/internal/backend"
 	appconfig "github.com/vanshamara/Augur/internal/config"
 	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
@@ -296,6 +297,28 @@ func TestBuildBackendCapabilitiesFromConfig(t *testing.T) {
 	}
 	if len(capabilities["strong"]) != 2 || capabilities["strong"][1] != core.Coding {
 		t.Fatalf("strong capabilities got %+v", capabilities["strong"])
+	}
+}
+
+func TestBuildBackendTimeoutsFromConfig(t *testing.T) {
+	timeouts := buildBackendTimeouts([]appconfig.Backend{
+		{ID: "fast", Timeout: appconfig.Duration{Duration: 250 * time.Millisecond}},
+		{ID: "strong"},
+	})
+
+	if timeouts["fast"] != 250*time.Millisecond {
+		t.Fatalf("fast timeout got %v", timeouts["fast"])
+	}
+	if _, ok := timeouts["strong"]; ok {
+		t.Fatalf("zero timeout should be omitted: %+v", timeouts)
+	}
+}
+
+func TestStartActiveHealthChecksRequiresHealthFilter(t *testing.T) {
+	stop, err := startActiveHealthChecks(context.Background(), appconfig.HealthCheck{Enabled: true}, nil, []backend.Backend{})
+	if err == nil {
+		stop()
+		t.Fatal("active health should require health filter")
 	}
 }
 

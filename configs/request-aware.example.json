@@ -15,18 +15,24 @@
       "id": "fast",
       "model": "gpt-4.1-nano",
       "capabilities": ["chat"],
+      "health_path": "/models",
+      "timeout": "8s",
       "max_completion_tokens": 512
     },
     {
       "id": "balanced",
       "model": "gpt-4.1-mini",
       "capabilities": ["chat", "reasoning", "coding"],
+      "health_path": "/models",
+      "timeout": "12s",
       "max_completion_tokens": 768
     },
     {
       "id": "strong",
       "model": "gpt-4.1",
       "capabilities": ["reasoning", "coding"],
+      "health_path": "/models",
+      "timeout": "20s",
       "max_completion_tokens": 1024
     }
   ],
@@ -109,6 +115,13 @@
   },
   "data_plane": {
     "filters": ["tenant", "health", "circuit", "concurrency"],
+    "health_check": {
+      "enabled": true,
+      "interval": "5s",
+      "timeout": "2s",
+      "failure_threshold": 2,
+      "success_threshold": 1
+    },
     "circuit": {
       "failure_threshold": 3,
       "recovery_after": "2s",

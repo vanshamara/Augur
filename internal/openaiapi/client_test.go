@@ -211,3 +211,29 @@ func TestChatCompletionStreamReturnsAPIError(t *testing.T) {
 		t.Fatal("expected api error")
 	}
 }
+
+func TestHealthCheckUsesConfiguredPath(t *testing.T) {
+	var gotPath string
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL + "/v1", APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	if err := client.HealthCheck(context.Background(), "/healthz"); err != nil {
+		t.Fatalf("health check: %v", err)
+	}
+	if gotPath != "/v1/healthz" {
+		t.Fatalf("path got %s", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Fatalf("authorization got %q", gotAuth)
+	}
+}

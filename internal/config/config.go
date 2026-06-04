@@ -57,6 +57,8 @@ type Backend struct {
 	ID                  core.BackendID     `json:"id"`
 	Model               string             `json:"model"`
 	Capabilities        []core.RequestType `json:"capabilities"`
+	HealthPath          string             `json:"health_path"`
+	Timeout             Duration           `json:"timeout"`
 	InputCostPerToken   float64            `json:"input_cost_per_token"`
 	OutputCostPerToken  float64            `json:"output_cost_per_token"`
 	MaxCompletionTokens int                `json:"max_completion_tokens"`
@@ -110,6 +112,7 @@ type DataPlane struct {
 	Concurrency  Concurrency                `json:"concurrency"`
 	Hedge        Hedge                      `json:"hedge"`
 	SingleFlight SingleFlight               `json:"single_flight"`
+	HealthCheck  HealthCheck                `json:"health_check"`
 	Health       map[core.BackendID]bool    `json:"health"`
 	Prices       map[core.BackendID]float64 `json:"prices"`
 }
@@ -160,6 +163,14 @@ type Hedge struct {
 type SingleFlight struct {
 	Enabled bool   `json:"enabled"`
 	Key     string `json:"key"`
+}
+
+type HealthCheck struct {
+	Enabled          bool     `json:"enabled"`
+	Interval         Duration `json:"interval"`
+	Timeout          Duration `json:"timeout"`
+	FailureThreshold int      `json:"failure_threshold"`
+	SuccessThreshold int      `json:"success_threshold"`
 }
 
 type Canary struct {
@@ -326,6 +337,10 @@ func (a App) withDefaults() (App, error) {
 		if a.Backends[i].ID == "" {
 			a.Backends[i].ID = core.BackendID(a.Backends[i].Model)
 		}
+		a.Backends[i].HealthPath = strings.TrimSpace(a.Backends[i].HealthPath)
+		if a.Backends[i].Timeout.Duration < 0 {
+			return App{}, fmt.Errorf("backend %q timeout cannot be negative", a.Backends[i].ID)
+		}
 		if err := validateBackendCapabilities(a.Backends[i]); err != nil {
 			return App{}, err
 		}
@@ -360,6 +375,9 @@ func (a App) withDefaults() (App, error) {
 	}
 	if a.DataPlane.Hedge.MaxExtraCalls < 0 {
 		return App{}, errors.New("data_plane hedge max_extra_calls cannot be negative")
+	}
+	if err := validateHealthCheck(a.DataPlane.HealthCheck); err != nil {
+		return App{}, err
 	}
 	a.Tenants.Header = strings.TrimSpace(a.Tenants.Header)
 	if a.Tenants.Header == "" {
@@ -427,6 +445,22 @@ func validateTenant(name string, tenant Tenant) error {
 	}
 	if tenant.Policy.MaxCompletionTokens < 0 {
 		return fmt.Errorf("tenant %q policy max_completion_tokens cannot be negative", name)
+	}
+	return nil
+}
+
+func validateHealthCheck(config HealthCheck) error {
+	if config.Interval.Duration < 0 {
+		return errors.New("data_plane health_check interval cannot be negative")
+	}
+	if config.Timeout.Duration < 0 {
+		return errors.New("data_plane health_check timeout cannot be negative")
+	}
+	if config.FailureThreshold < 0 {
+		return errors.New("data_plane health_check failure_threshold cannot be negative")
+	}
+	if config.SuccessThreshold < 0 {
+		return errors.New("data_plane health_check success_threshold cannot be negative")
 	}
 	return nil
 }

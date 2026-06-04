@@ -834,6 +834,60 @@ func TestReadyCanFail(t *testing.T) {
 	}
 }
 
+func TestBackendDebugReturnsStatus(t *testing.T) {
+	server, err := New(Config{
+		Gateway: &fakeGateway{},
+		BackendStatus: func() []dataplane.BackendStatus {
+			return []dataplane.BackendStatus{
+				{
+					ID:                  "fast",
+					Healthy:             true,
+					CircuitMode:         "closed",
+					ConcurrencyLimit:    8,
+					Samples:             4,
+					P95LatencyMs:        120,
+					ErrorRate:           0.25,
+					BackendTimeoutMs:    500,
+					HealthError:         "",
+					ConsecutiveFailures: 0,
+				},
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/debug/backends", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Backends []dataplane.BackendStatus `json:"backends"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if len(body.Backends) != 1 || body.Backends[0].ID != "fast" || body.Backends[0].CircuitMode != "closed" {
+		t.Fatalf("debug body got %+v", body)
+	}
+}
+
+func TestBackendDebugRequiresAuthWhenEnabled(t *testing.T) {
+	server := testServerWithAuth(t, &fakeGateway{}, []string{"client-key"})
+	req := httptest.NewRequest(http.MethodGet, "/debug/backends", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
 func testServer(t *testing.T, gateway Gateway) *Server {
 	t.Helper()
 	return testServerWithDefaults(t, gateway, RequestDefaults{

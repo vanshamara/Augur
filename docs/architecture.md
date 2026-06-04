@@ -19,15 +19,16 @@ client
 2. `internal/httpapi` parses `/v1/chat/completions` and request-aware hints.
 3. `internal/dataplane` matches route rules and creates the route candidate set.
 4. `internal/dataplane` removes backends that do not support the request type.
-5. `internal/dataplane` applies filters such as health, circuit breaking,
-   concurrency, tenant limits, hedging, and single flight.
+5. `internal/dataplane` applies filters such as active health state, circuit
+   breaking, concurrency, tenant limits, hedging, and single flight.
 6. `internal/dataplane` applies deterministic canary assignment when a route has
    a canary rule and the canary backend is still eligible.
 7. A router chooses one backend from the remaining candidates.
 8. If the chosen backend fails with a retryable error before a complete
    response, `internal/dataplane` tries the route fallback chain.
 9. Shadow canaries call the candidate backend without returning that response.
-10. `internal/backend/openai` sends each attempt to the provider.
+10. `internal/dataplane` applies any per-backend timeout, then
+    `internal/backend/openai` sends the attempt to the provider.
 11. Augur returns the response and sets `X-Augur-Backend`, `X-Augur-Route`,
     `X-Augur-Fallback-Count`, `X-Augur-Attempted-Backends`, and canary headers
     when available.
@@ -56,12 +57,13 @@ attribution, rollback helpers, and distributed learning simulation.
 `internal/dataplane` applies operational controls around routing:
 
 - backend capability filtering
-- health filtering
+- active health filtering
 - circuit breaking
 - adaptive concurrency
 - tenant limits
 - hedging
 - single flight
+- backend debug status for health, circuit mode, P95 latency, and error rate
 
 `internal/harness` runs deterministic replay against mock backends. It is used
 for policy comparison and regression tests.

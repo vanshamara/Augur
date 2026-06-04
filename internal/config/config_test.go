@@ -21,12 +21,14 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 		"openai": {"base_url": "http://example.test/v1", "api_key_env": "AUGUR_KEY"},
 		"backends": [
 			{
-				"id": "fast",
-				"model": "model-fast",
-				"capabilities": ["chat", "reasoning"],
-				"input_cost_per_token": 0.001,
-				"output_cost_per_token": 0.002,
-				"max_completion_tokens": 128
+					"id": "fast",
+					"model": "model-fast",
+					"capabilities": ["chat", "reasoning"],
+					"health_path": "/healthz",
+					"timeout": "3s",
+					"input_cost_per_token": 0.001,
+					"output_cost_per_token": 0.002,
+					"max_completion_tokens": 128
 			}
 		],
 		"routes": [
@@ -64,9 +66,16 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 				"budget_fraction": 0.25,
 				"trigger_percentile": 95,
 				"max_extra_calls": 2
+				},
+				"single_flight": {"enabled": true, "key": "prompt"},
+				"health_check": {
+					"enabled": true,
+					"interval": "2s",
+					"timeout": "500ms",
+					"failure_threshold": 2,
+					"success_threshold": 2
+				}
 			},
-			"single_flight": {"enabled": true, "key": "prompt"}
-		},
 		"learning": {
 			"enabled": true,
 			"tau": "10m",
@@ -137,6 +146,12 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	if len(config.Backends[0].Capabilities) != 2 || config.Backends[0].Capabilities[1] != "reasoning" {
 		t.Fatalf("backend capabilities got %+v", config.Backends[0].Capabilities)
 	}
+	if config.Backends[0].HealthPath != "/healthz" || config.Backends[0].Timeout.Duration.String() != "3s" {
+		t.Fatalf("backend health config got %+v", config.Backends[0])
+	}
+	if config.Backends[0].HealthPath != "/healthz" || config.Backends[0].Timeout.Duration.String() != "3s" {
+		t.Fatalf("backend health config got %+v", config.Backends[0])
+	}
 	if len(config.Routes) != 1 || config.Routes[0].Name != "reasoning-premium" {
 		t.Fatalf("routes got %+v", config.Routes)
 	}
@@ -158,8 +173,17 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	if config.DataPlane.Hedge.BudgetFraction == nil || *config.DataPlane.Hedge.BudgetFraction != 0.25 {
 		t.Fatalf("hedge budget got %+v", config.DataPlane.Hedge)
 	}
+	if !config.DataPlane.HealthCheck.Enabled || config.DataPlane.HealthCheck.Timeout.Duration.String() != "500ms" {
+		t.Fatalf("health check got %+v", config.DataPlane.HealthCheck)
+	}
 	if config.DataPlane.Hedge.TriggerPercentile != 95 || config.DataPlane.Hedge.MaxExtraCalls != 2 {
 		t.Fatalf("hedge tuning got %+v", config.DataPlane.Hedge)
+	}
+	if !config.DataPlane.HealthCheck.Enabled || config.DataPlane.HealthCheck.Interval.Duration.String() != "2s" {
+		t.Fatalf("health check got %+v", config.DataPlane.HealthCheck)
+	}
+	if config.DataPlane.HealthCheck.Timeout.Duration.String() != "500ms" || config.DataPlane.HealthCheck.FailureThreshold != 2 {
+		t.Fatalf("health check tuning got %+v", config.DataPlane.HealthCheck)
 	}
 	if config.Canary.P95RegressionRatio != 0.25 || config.Canary.MaxErrorRate != 0.03 || config.Canary.MinSamples != 40 {
 		t.Fatalf("canary got %+v", config.Canary)
@@ -321,6 +345,8 @@ backends:
   - id: "fast"
     model: "model-fast"
     capabilities: ["chat", "reasoning"]
+    health_path: "/healthz"
+    timeout: "3s"
     input_cost_per_token: 0.001
     output_cost_per_token: 0.002
     max_completion_tokens: 128
@@ -363,6 +389,12 @@ data_plane:
   single_flight:
     enabled: true
     key: "prompt"
+  health_check:
+    enabled: true
+    interval: "2s"
+    timeout: "500ms"
+    failure_threshold: 2
+    success_threshold: 2
 learning:
   enabled: true
   tau: "10m"
@@ -630,6 +662,20 @@ func TestParseRejectsNegativeServerTimeouts(t *testing.T) {
 	_, err := Parse([]byte(`{"server":{"read_timeout":"-1s"},"backends":[{"model":"model-a"}]}`))
 	if err == nil {
 		t.Fatal("negative read timeout should fail")
+	}
+}
+
+func TestParseRejectsNegativeBackendTimeout(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a","timeout":"-1s"}]}`))
+	if err == nil {
+		t.Fatal("negative backend timeout should fail")
+	}
+}
+
+func TestParseRejectsNegativeActiveHealthInterval(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"data_plane":{"health_check":{"interval":"-1s"}}}`))
+	if err == nil {
+		t.Fatal("negative health check interval should fail")
 	}
 }
 
