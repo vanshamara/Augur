@@ -213,6 +213,38 @@ func TestChatCompletionsWritesFallbackHeaders(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsWritesCanaryHeaders(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:      "req-1",
+			Backend:        "candidate",
+			CanaryMode:     "live",
+			CanaryBackend:  "candidate",
+			OutputText:     "answer",
+			CanaryRollback: "error_rate",
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Augur-Canary"); got != "live" {
+		t.Fatalf("canary header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Canary-Backend"); got != "candidate" {
+		t.Fatalf("canary backend header got %q", got)
+	}
+	if got := rec.Header().Get("X-Augur-Canary-Rollback"); got != "error_rate" {
+		t.Fatalf("canary rollback header got %q", got)
+	}
+}
+
 func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
 	temperature := 0.4
 	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
@@ -234,6 +266,28 @@ func TestChatCompletionsUsesDefaultOptions(t *testing.T) {
 	}
 	if gateway.req.Temperature == nil || *gateway.req.Temperature != 0.4 {
 		t.Fatalf("temperature got %v", gateway.req.Temperature)
+	}
+}
+
+func TestChatCompletionsUsesUserIDHints(t *testing.T) {
+	gateway := &fakeGateway{resp: core.Response{RequestID: "req-1", Backend: "fast", OutputText: "answer"}}
+	server := testServer(t, gateway)
+	body := `{
+		"model":"augur-chat",
+		"metadata":{"augur_user_id":"metadata-user"},
+		"messages":[{"role":"user","content":"hello"}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Augur-User-ID", "header-user")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.UserID != "header-user" {
+		t.Fatalf("user id got %q", gateway.req.UserID)
 	}
 }
 

@@ -54,6 +54,7 @@ type requestOptions struct {
 	LatencyBudgetMs int
 	CostBudgetUSD   float64
 	UserTier        string
+	UserID          string
 }
 
 type Server struct {
@@ -313,6 +314,7 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantI
 	return core.Request{
 		ID:                  id,
 		TenantID:            tenantID,
+		UserID:              options.UserID,
 		Prompt:              prompt,
 		Messages:            messages,
 		MaxCompletionTokens: r.maxCompletionTokens(defaults.MaxCompletionTokens),
@@ -622,6 +624,9 @@ func requestOptionsFromMetadata(metadata map[string]string) (requestOptions, err
 	if value := metadataValue(metadata, "augur_user_tier", "user_tier"); value != "" {
 		options.UserTier = strings.TrimSpace(value)
 	}
+	if value := metadataValue(metadata, "augur_user_id", "user_id"); value != "" {
+		options.UserID = strings.TrimSpace(value)
+	}
 	if value := metadataValue(metadata, "augur_latency_budget_ms", "latency_budget_ms"); value != "" {
 		options.LatencyBudgetMs, err = parsePositiveInt(value, "latency budget")
 		if err != nil {
@@ -647,6 +652,9 @@ func (o *requestOptions) applyHeaders(headers http.Header) error {
 	}
 	if value := headers.Get("X-Augur-User-Tier"); value != "" {
 		o.UserTier = strings.TrimSpace(value)
+	}
+	if value := headers.Get("X-Augur-User-ID"); value != "" {
+		o.UserID = strings.TrimSpace(value)
 	}
 	if value := headers.Get("X-Augur-Latency-Budget-Ms"); value != "" {
 		o.LatencyBudgetMs, err = parsePositiveInt(value, "latency budget")
@@ -749,6 +757,9 @@ type streamRoutingMetadata interface {
 	RouteName() string
 	AttemptedBackends() []core.BackendID
 	FallbackCount() int
+	CanaryMode() string
+	CanaryBackend() core.BackendID
+	CanaryRollback() string
 }
 
 type attemptErrorMetadata interface {
@@ -761,6 +772,7 @@ func writeResponseRoutingHeaders(w http.ResponseWriter, resp core.Response) {
 	if resp.RouteName != "" {
 		w.Header().Set("X-Augur-Route", resp.RouteName)
 	}
+	writeCanaryHeaders(w, resp.CanaryMode, resp.CanaryBackend, resp.CanaryRollback)
 	writeAttemptHeaders(w, resp.AttemptedBackends, resp.FallbackCount)
 }
 
@@ -773,6 +785,7 @@ func writeStreamRoutingHeaders(w http.ResponseWriter, stream core.Stream) {
 	if metadata.RouteName() != "" {
 		w.Header().Set("X-Augur-Route", metadata.RouteName())
 	}
+	writeCanaryHeaders(w, metadata.CanaryMode(), metadata.CanaryBackend(), metadata.CanaryRollback())
 	writeAttemptHeaders(w, metadata.AttemptedBackends(), metadata.FallbackCount())
 }
 
@@ -793,6 +806,18 @@ func writeAttemptHeaders(w http.ResponseWriter, attempts []core.BackendID, fallb
 		parts = append(parts, string(id))
 	}
 	w.Header().Set("X-Augur-Attempted-Backends", strings.Join(parts, ","))
+}
+
+func writeCanaryHeaders(w http.ResponseWriter, mode string, backend core.BackendID, rollbackReason string) {
+	if mode != "" {
+		w.Header().Set("X-Augur-Canary", mode)
+	}
+	if backend != "" {
+		w.Header().Set("X-Augur-Canary-Backend", string(backend))
+	}
+	if rollbackReason != "" {
+		w.Header().Set("X-Augur-Canary-Rollback", rollbackReason)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, kind string, message string) {

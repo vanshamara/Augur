@@ -42,7 +42,13 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 				],
 				"fallbacks": [
 					{"backend": "fast"}
-				]
+				],
+				"canary": {
+					"backend": "fast",
+					"percent": 5,
+					"sticky_key": "tenant_and_request",
+					"shadow": true
+				}
 			}
 		],
 		"router": {"type": "p2c", "seed": 9, "alpha": 0.3, "p2c_window": 32},
@@ -69,12 +75,11 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"persistence": {"enabled": true, "path": ".augur/state.json", "save_every": 4},
 			"judge": {"enabled": true, "model": "judge-model", "seed": 11}
 		},
-		"canary": {
-			"p95_regression_ratio": 0.25,
-			"max_error_rate": 0.03,
-			"min_quality": 0.80,
-			"min_samples": 40
-		},
+			"canary": {
+				"p95_regression_ratio": 0.25,
+				"max_error_rate": 0.03,
+				"min_samples": 40
+			},
 		"tenants": {
 			"header": "X-Augur-Tenant",
 			"default_tenant": "default",
@@ -140,6 +145,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if len(config.Routes[0].Fallbacks) != 1 || config.Routes[0].Fallbacks[0].Backend != "fast" {
 		t.Fatalf("route fallbacks got %+v", config.Routes[0].Fallbacks)
+	}
+	if config.Routes[0].Canary.Backend != "fast" || config.Routes[0].Canary.Percent != 5 || !config.Routes[0].Canary.Shadow {
+		t.Fatalf("route canary got %+v", config.Routes[0].Canary)
 	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
@@ -322,6 +330,11 @@ routes:
       - backend: "fast"
     fallbacks:
       - backend: "fast"
+    canary:
+      backend: "fast"
+      percent: 5
+      sticky_key: "tenant_and_request"
+      shadow: true
 router:
   type: "p2c"
   seed: 9
@@ -366,7 +379,6 @@ learning:
 canary:
   p95_regression_ratio: 0.25
   max_error_rate: 0.03
-  min_quality: 0.80
   min_samples: 40
 tenants:
   header: "X-Augur-Tenant"
@@ -428,6 +440,9 @@ budgets:
 	}
 	if len(config.Routes[0].Fallbacks) != 1 || config.Routes[0].Fallbacks[0].Backend != "fast" {
 		t.Fatalf("route fallbacks got %+v", config.Routes[0].Fallbacks)
+	}
+	if config.Routes[0].Canary.Backend != "fast" || config.Routes[0].Canary.Percent != 5 || !config.Routes[0].Canary.Shadow {
+		t.Fatalf("route canary got %+v", config.Routes[0].Canary)
 	}
 	if config.Router.Type != "p2c" || config.Router.P2CWindow != 32 {
 		t.Fatalf("router got %+v", config.Router)
@@ -532,6 +547,48 @@ func TestParseRejectsRouteWithUnknownFallbackBackend(t *testing.T) {
 	}`))
 	if err == nil {
 		t.Fatal("route with unknown fallback backend should fail")
+	}
+}
+
+func TestParseRejectsRouteWithUnknownCanaryBackend(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{
+			"name": "bad",
+			"candidates": [{"backend": "a"}],
+			"canary": {"backend": "missing", "percent": 5}
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("route with unknown canary backend should fail")
+	}
+}
+
+func TestParseRejectsRouteWithBadCanaryPercent(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{
+			"name": "bad",
+			"candidates": [{"backend": "a"}],
+			"canary": {"backend": "a", "percent": 101}
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("route with bad canary percent should fail")
+	}
+}
+
+func TestParseRejectsRouteWithBadCanaryStickyKey(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [{"id": "a", "model": "model-a"}],
+		"routes": [{
+			"name": "bad",
+			"candidates": [{"backend": "a"}],
+			"canary": {"backend": "a", "percent": 5, "sticky_key": "bad"}
+		}]
+	}`))
+	if err == nil {
+		t.Fatal("route with bad canary sticky key should fail")
 	}
 }
 
@@ -643,7 +700,6 @@ func TestCanaryBuildsRollbackConfig(t *testing.T) {
 	canary := Canary{
 		P95RegressionRatio: 0.30,
 		MaxErrorRate:       0.04,
-		MinQuality:         0.82,
 		MinSamples:         50,
 	}
 
@@ -651,7 +707,7 @@ func TestCanaryBuildsRollbackConfig(t *testing.T) {
 	if rollback.P95RegressionRatio != 0.30 || rollback.MaxErrorRate != 0.04 {
 		t.Fatalf("rollback config got %+v", rollback)
 	}
-	if rollback.MinQuality != 0.82 || rollback.MinSamples != 50 {
+	if rollback.MinSamples != 50 {
 		t.Fatalf("rollback config got %+v", rollback)
 	}
 }

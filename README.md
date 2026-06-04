@@ -24,6 +24,7 @@ Built or mostly built:
 - route rules with task, tenant, tier, and candidate backend matching
 - backend capability filtering for chat, reasoning, coding, and embedding
 - route-specific fallback chains for retryable upstream failures
+- deterministic canary percentage rollout and shadow mode
 - health, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - OpenAI-compatible backend adapter
 - streaming responses
@@ -38,8 +39,6 @@ Built or mostly built:
 
 Partial:
 
-- canary rollback helpers exist, but deterministic percentage rollout is not a
-  first-class route rule yet
 - health filtering and circuit breaking exist, but active health checks are not
   built yet
 
@@ -47,7 +46,6 @@ Not included:
 
 - managed hosting
 - built-in TLS
-- deterministic canary percentage routing
 - active health checking
 - Kubernetes manifests
 - production dashboards
@@ -157,6 +155,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "X-Augur-Request-Type: reasoning" \
   -H "X-Augur-User-Tier: premium" \
+  -H "X-Augur-User-ID: user-123" \
   -H "X-Augur-Latency-Budget-Ms: 2400" \
   -H "X-Augur-Cost-Budget-USD: 0.05" \
   -d '{
@@ -169,6 +168,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 The bandit uses these hints, token estimates, and real outcomes to learn which
 backend fits each request shape.
+
+Routes can also define a canary backend with a deterministic percentage. Canary
+responses include `X-Augur-Canary` and `X-Augur-Canary-Backend`. Shadow canaries
+call the candidate backend without returning its response.
 
 When hints are missing, Augur runs a local prompt classifier before routing. It
 marks simple or spam-like prompts as cheap chat, and marks harder coding or

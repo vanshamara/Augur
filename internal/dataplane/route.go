@@ -11,6 +11,7 @@ type RouteRule struct {
 	Match      RouteMatch
 	Candidates []core.BackendID
 	Fallbacks  []core.BackendID
+	Canary     CanaryRule
 }
 
 type RouteMatch struct {
@@ -23,6 +24,7 @@ type RouteDecision struct {
 	Name       string
 	Candidates []core.BackendID
 	Fallbacks  []core.BackendID
+	Canary     CanaryRule
 }
 
 type RouteSelector struct {
@@ -37,6 +39,7 @@ func NewRouteSelector(routes []RouteRule) *RouteSelector {
 			Match:      copyRouteMatch(route.Match),
 			Candidates: append([]core.BackendID(nil), route.Candidates...),
 			Fallbacks:  append([]core.BackendID(nil), route.Fallbacks...),
+			Canary:     route.Canary,
 		}
 	}
 	return &RouteSelector{routes: copied}
@@ -52,6 +55,7 @@ func (s *RouteSelector) Select(req core.Request, all []core.BackendID) RouteDeci
 				Name:       route.Name,
 				Candidates: routeCandidates(route.Candidates, all),
 				Fallbacks:  routeCandidates(route.Fallbacks, all),
+				Canary:     route.Canary,
 			}
 		}
 	}

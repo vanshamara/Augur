@@ -93,6 +93,11 @@ routes:
       - backend: "balanced"
     fallbacks:
       - backend: "strong"
+    canary:
+      backend: "candidate"
+      percent: 5
+      sticky_key: "tenant_and_request"
+      shadow: false
   - name: "default"
     candidates:
       - backend: "fast"
@@ -112,6 +117,12 @@ with no `match` block can be used as the default route.
 - `candidates`: backend IDs that this route may use.
 - `fallbacks`: ordered backend IDs to try when the chosen backend fails before
   a complete response.
+- `canary.backend`: backend ID to test with percentage rollout.
+- `canary.percent`: deterministic rollout percentage from `0` to `100`.
+- `canary.sticky_key`: optional key. Supported values are `request_id`,
+  `tenant_id`, `user_id`, `tenant_and_request`, and `tenant_and_user`.
+- `canary.shadow`: when true, Augur calls the canary backend without returning
+  its response.
 
 If `routes` is empty, Augur keeps the older behavior and all configured backends
 are candidates. If routes are configured and none match a request, Augur returns
@@ -204,13 +215,24 @@ responses, or API keys.
 canary:
   p95_regression_ratio: 0.20
   max_error_rate: 0.02
-  min_quality: 0.85
   min_samples: 20
 ```
 
-These values configure rollback decisions for canary checks. They do not enable
-deterministic percentage rollout by themselves. First-class canary percentage
-routing is planned V1 work.
+These top-level values configure canary rollback thresholds for latency, error
+rate, and sample count. Route-level `canary` blocks enable deterministic
+percentage rollout.
+
+Augur disables a route canary when the canary backend crosses the configured
+error rate threshold, shows a P95 latency regression against the stable backend,
+or becomes unavailable through health or circuit filters. If `canary.shadow` is
+true, Augur still sends stable responses to the client and records the shadow
+backend outcome separately.
+
+The HTTP response can include these headers:
+
+- `X-Augur-Canary`: `live` or `shadow`
+- `X-Augur-Canary-Backend`: canary backend ID
+- `X-Augur-Canary-Rollback`: rollback reason when a canary is disabled
 
 ## Fallback
 
@@ -312,6 +334,7 @@ Clients can override request shape with headers:
 ```text
 X-Augur-Request-Type: reasoning
 X-Augur-User-Tier: premium
+X-Augur-User-ID: user-123
 X-Augur-Latency-Budget-Ms: 2400
 X-Augur-Cost-Budget-USD: 0.05
 ```
@@ -333,6 +356,7 @@ The same values can be sent in chat request `metadata`:
   "metadata": {
     "augur_request_type": "reasoning",
     "augur_user_tier": "premium",
+    "augur_user_id": "user-123",
     "augur_latency_budget_ms": "2400",
     "augur_cost_budget_usd": "0.05"
   }

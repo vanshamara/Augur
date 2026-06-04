@@ -121,3 +121,13 @@ func containsBackend(ids []core.BackendID, target core.BackendID) bool {
 	}
 	return false
 }
+
+func appendMissingBackends(ids []core.BackendID, values ...core.BackendID) []core.BackendID {
+	out := append([]core.BackendID(nil), ids...)
+	for _, id := range values {
+		if id != "" && !containsBackend(out, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}

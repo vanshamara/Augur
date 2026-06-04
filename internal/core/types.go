@@ -28,6 +28,7 @@ type Message struct {
 type Request struct {
 	ID                  string
 	TenantID            string
+	UserID              string
 	Prompt              string
 	Messages            []Message
 	MaxCompletionTokens int
@@ -50,6 +51,9 @@ type Response struct {
 	TenantID          string
 	RouteName         string
 	Backend           BackendID
+	CanaryMode        string
+	CanaryBackend     BackendID
+	CanaryRollback    string
 	AttemptedBackends []BackendID
 	FallbackCount     int
 	OutputText        string
@@ -61,6 +65,9 @@ type StreamChunk struct {
 	TenantID          string
 	RouteName         string
 	Backend           BackendID
+	CanaryMode        string
+	CanaryBackend     BackendID
+	CanaryRollback    string
 	AttemptedBackends []BackendID
 	FallbackCount     int
 	Delta             string

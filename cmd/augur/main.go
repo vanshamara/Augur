@@ -70,6 +70,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Backends:        backends,
 		Routes:          buildRouteRules(config.Routes),
 		Capabilities:    buildBackendCapabilities(config.Backends),
+		Canary:          buildCanaryConfig(config.Canary),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
@@ -320,6 +321,12 @@ func buildRouteRules(routes []appconfig.Route) []dataplane.RouteRule {
 			},
 			Candidates: routeCandidateBackends(route.Candidates),
 			Fallbacks:  routeCandidateBackends(route.Fallbacks),
+			Canary: dataplane.CanaryRule{
+				Backend:   route.Canary.Backend,
+				Percent:   route.Canary.Percent,
+				StickyKey: route.Canary.StickyKey,
+				Shadow:    route.Canary.Shadow,
+			},
 		})
 	}
 	return out
@@ -339,6 +346,12 @@ func buildBackendCapabilities(backends []appconfig.Backend) map[core.BackendID][
 		out[backend.ID] = append([]core.RequestType(nil), backend.Capabilities...)
 	}
 	return out
+}
+
+func buildCanaryConfig(config appconfig.Canary) dataplane.CanaryConfig {
+	return dataplane.CanaryConfig{
+		Rollback: config.RollbackConfig(),
+	}
 }
 
 func buildHedge(config appconfig.Hedge) dataplane.HedgeConfig {

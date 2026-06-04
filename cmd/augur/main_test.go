@@ -250,6 +250,12 @@ func TestBuildRouteRulesFromConfig(t *testing.T) {
 			Fallbacks: []appconfig.RouteCandidate{
 				{Backend: "safe"},
 			},
+			Canary: appconfig.RouteCanary{
+				Backend:   "candidate",
+				Percent:   5,
+				StickyKey: "tenant_and_request",
+				Shadow:    true,
+			},
 		},
 	})
 
@@ -265,6 +271,9 @@ func TestBuildRouteRulesFromConfig(t *testing.T) {
 	}
 	if len(route.Fallbacks) != 1 || route.Fallbacks[0] != "safe" {
 		t.Fatalf("fallbacks got %+v", route.Fallbacks)
+	}
+	if route.Canary.Backend != "candidate" || route.Canary.Percent != 5 || !route.Canary.Shadow {
+		t.Fatalf("canary got %+v", route.Canary)
 	}
 }
 
@@ -287,6 +296,18 @@ func TestBuildBackendCapabilitiesFromConfig(t *testing.T) {
 	}
 	if len(capabilities["strong"]) != 2 || capabilities["strong"][1] != core.Coding {
 		t.Fatalf("strong capabilities got %+v", capabilities["strong"])
+	}
+}
+
+func TestBuildCanaryConfigFromConfig(t *testing.T) {
+	config := buildCanaryConfig(appconfig.Canary{
+		P95RegressionRatio: 0.25,
+		MaxErrorRate:       0.03,
+		MinSamples:         4,
+	})
+
+	if config.Rollback.P95RegressionRatio != 0.25 || config.Rollback.MaxErrorRate != 0.03 || config.Rollback.MinSamples != 4 {
+		t.Fatalf("canary config got %+v", config)
 	}
 }
 
@@ -648,6 +669,7 @@ func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi
 		Backends:        backends,
 		Routes:          buildRouteRules(config.Routes),
 		Capabilities:    buildBackendCapabilities(config.Backends),
+		Canary:          buildCanaryConfig(config.Canary),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,

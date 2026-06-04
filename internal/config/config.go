@@ -67,6 +67,7 @@ type Route struct {
 	Match      RouteMatch       `json:"match"`
 	Candidates []RouteCandidate `json:"candidates"`
 	Fallbacks  []RouteCandidate `json:"fallbacks"`
+	Canary     RouteCanary      `json:"canary"`
 }
 
 type RouteMatch struct {
@@ -77,6 +78,13 @@ type RouteMatch struct {
 
 type RouteCandidate struct {
 	Backend core.BackendID `json:"backend"`
+}
+
+type RouteCanary struct {
+	Backend   core.BackendID `json:"backend"`
+	Percent   float64        `json:"percent"`
+	StickyKey string         `json:"sticky_key"`
+	Shadow    bool           `json:"shadow"`
 }
 
 type Pricing struct {
@@ -157,7 +165,6 @@ type SingleFlight struct {
 type Canary struct {
 	P95RegressionRatio float64 `json:"p95_regression_ratio"`
 	MaxErrorRate       float64 `json:"max_error_rate"`
-	MinQuality         float64 `json:"min_quality"`
 	MinSamples         int     `json:"min_samples"`
 }
 
@@ -401,7 +408,6 @@ func (c Canary) RollbackConfig() control.RollbackConfig {
 	return control.RollbackConfig{
 		P95RegressionRatio: c.P95RegressionRatio,
 		MaxErrorRate:       c.MaxErrorRate,
-		MinQuality:         c.MinQuality,
 		MinSamples:         c.MinSamples,
 	}
 }
@@ -456,6 +462,9 @@ func validateRoutes(routes []Route, backends []Backend) error {
 		if err := validateRouteBackends(name, "fallback", route.Fallbacks, backendIDs); err != nil {
 			return err
 		}
+		if err := validateRouteCanary(name, route.Canary, backendIDs); err != nil {
+			return err
+		}
 		if err := validateRouteMatch(name, route.Match); err != nil {
 			return err
 		}
@@ -467,6 +476,27 @@ func validateRoutes(routes []Route, backends []Backend) error {
 		}
 	}
 	return nil
+}
+
+func validateRouteCanary(name string, canary RouteCanary, backendIDs map[core.BackendID]bool) error {
+	if canary.Backend == "" && canary.Percent == 0 && strings.TrimSpace(canary.StickyKey) == "" && !canary.Shadow {
+		return nil
+	}
+	if canary.Backend == "" {
+		return fmt.Errorf("route %q canary backend is required", name)
+	}
+	if !backendIDs[canary.Backend] {
+		return fmt.Errorf("route %q references unknown canary backend %q", name, canary.Backend)
+	}
+	if canary.Percent < 0 || canary.Percent > 100 {
+		return fmt.Errorf("route %q canary percent must be between 0 and 100", name)
+	}
+	switch strings.TrimSpace(canary.StickyKey) {
+	case "", "request_id", "tenant_id", "user_id", "tenant_and_request", "tenant_and_user":
+		return nil
+	default:
+		return fmt.Errorf("route %q has unsupported canary sticky_key %q", name, canary.StickyKey)
+	}
 }
 
 func validateRouteBackends(name string, role string, entries []RouteCandidate, backendIDs map[core.BackendID]bool) error {

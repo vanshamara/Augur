@@ -93,6 +93,7 @@ Clients can send these optional headers:
 ```text
 X-Augur-Request-Type: reasoning
 X-Augur-User-Tier: premium
+X-Augur-User-ID: user-123
 X-Augur-Latency-Budget-Ms: 2400
 X-Augur-Cost-Budget-USD: 0.05
 ```
@@ -106,6 +107,9 @@ filters and router selection.
 
 Routes can also define `fallbacks`. Augur tries those backends in order when the
 chosen backend fails with a retryable error before a complete response.
+
+Routes can define `canary` for deterministic rollout. Use `shadow: true` when
+you want to call the candidate backend without returning its response.
 
 ## Runtime State
 
@@ -155,8 +159,8 @@ Auth protects `/v1/chat/completions`. Health endpoints stay public.
 - Hedging: configure `data_plane.hedge`.
 - Backend capabilities: set `backends[].capabilities`.
 - Route fallback chains: set `routes[].fallbacks`.
-- Canary rollback thresholds: configure `canary`. Deterministic percentage
-  rollout is planned V1 work.
+- Canary rollout: set `routes[].canary`.
+- Canary rollback thresholds: configure top-level `canary`.
 - Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
 - Live learning: use `router.type: "bandit"` and `learning.enabled: true`.
 - Persistence: enable `learning.persistence` before relying on learned state
@@ -175,7 +179,6 @@ See [Config reference](config-reference.md) for fields.
 ## Current Gaps
 
 - TLS termination must be handled outside Augur.
-- Deterministic canary percentage rollout is not included.
 - Active health checks are not included.
 - Kubernetes manifests are not included.
 - Dashboards and alerts are not included.

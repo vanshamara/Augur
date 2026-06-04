@@ -136,6 +136,9 @@ func responseAttrs(resp core.Response) []attribute.KeyValue {
 		attribute.String("request.id", resp.RequestID),
 		attribute.String("route.name", resp.RouteName),
 		attribute.String("backend.id", string(resp.Backend)),
+		attribute.String("canary.mode", resp.CanaryMode),
+		attribute.String("canary.backend", string(resp.CanaryBackend)),
+		attribute.String("canary.rollback_reason", resp.CanaryRollback),
 		attribute.Bool("response.errored", resp.Errored),
 	}
 }

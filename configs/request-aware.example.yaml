@@ -35,6 +35,11 @@ routes:
       - backend: "balanced"
     fallbacks:
       - backend: "strong"
+    canary:
+      backend: "strong"
+      percent: 5
+      sticky_key: "user_id"
+      shadow: true
   - name: "reasoning"
     match:
       task_types: ["reasoning"]
@@ -42,6 +47,10 @@ routes:
       - backend: "balanced"
     fallbacks:
       - backend: "strong"
+    canary:
+      backend: "strong"
+      percent: 5
+      sticky_key: "tenant_and_request"
   - name: "default"
     candidates:
       - backend: "fast"

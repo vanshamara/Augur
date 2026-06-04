@@ -40,6 +40,7 @@ type Config struct {
 	Backends        []backend.Backend
 	Routes          []RouteRule
 	Capabilities    map[core.BackendID][]core.RequestType
+	Canary          CanaryConfig
 	Filters         []Filter
 	Clock           clock.Clock
 	Hedge           HedgeConfig
@@ -54,6 +55,7 @@ type Gateway struct {
 	backends        map[core.BackendID]backend.Backend
 	routes          *RouteSelector
 	capabilities    map[core.BackendID]map[core.RequestType]bool
+	canaries        *CanaryTable
 	filters         []Filter
 	clock           clock.Clock
 	hedge           HedgeConfig
@@ -102,6 +104,7 @@ func New(config Config) (*Gateway, error) {
 		backends:        backends,
 		routes:          NewRouteSelector(config.Routes),
 		capabilities:    capabilities,
+		canaries:        NewCanaryTable(config.Canary),
 		filters:         append([]Filter(nil), config.Filters...),
 		clock:           config.Clock,
 		hedge:           config.Hedge,
@@ -147,6 +150,7 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
 		return nil, ErrNoCandidates
 	}
+	g.startShadow(ctx, req, candidates)
 	if len(candidates.Fallbacks) > 0 {
 		return g.streamWithFallbacks(ctx, req, candidates)
 	}
@@ -160,7 +164,7 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 		}
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, choice, len(remaining))
 		attempts = append(attempts, choice)
-		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName, attempts, 0)
+		stream, err := g.streamBackend(ctx, req, choice, candidates.RouteName, candidates.Canary, attempts, 0)
 		if !errors.Is(err, ErrLoadShed) {
 			return stream, err
 		}
@@ -177,6 +181,7 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 	if len(candidates.IDs) == 0 && len(candidates.Fallbacks) == 0 {
 		return core.Response{}, ErrNoCandidates
 	}
+	g.startShadow(ctx, req, candidates)
 	if len(candidates.Fallbacks) > 0 {
 		return g.callWithFallbacks(ctx, req, candidates)
 	}
@@ -190,6 +195,7 @@ type candidateSet struct {
 	RouteName string
 	IDs       []core.BackendID
 	Fallbacks []core.BackendID
+	Canary    CanaryDecision
 	Err       error
 }
 
@@ -197,12 +203,14 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 	decision := g.routes.Select(req, g.ids)
 	candidates := copyCandidates(decision.Candidates)
 	fallbacks := copyCandidates(decision.Fallbacks)
+	canaryCandidates := copyCandidates(routeCandidates([]core.BackendID{decision.Canary.Backend}, g.ids))
 	if len(candidates) == 0 && len(fallbacks) == 0 {
 		return candidateSet{RouteName: decision.Name}
 	}
 	candidates = g.compatibleCandidates(req, candidates)
 	fallbacks = g.compatibleCandidates(req, fallbacks)
-	if len(candidates) == 0 && len(fallbacks) == 0 {
+	canaryCandidates = g.compatibleCandidates(req, canaryCandidates)
+	if len(candidates) == 0 && len(fallbacks) == 0 && len(canaryCandidates) == 0 {
 		requestType := requestTypeForCapabilities(req)
 		return candidateSet{
 			RouteName: decision.Name,
@@ -214,8 +222,51 @@ func (g *Gateway) candidates(req core.Request) candidateSet {
 		if len(fallbacks) > 0 {
 			fallbacks = filter.Apply(req, fallbacks)
 		}
+		if len(canaryCandidates) > 0 {
+			canaryCandidates = filter.Apply(req, canaryCandidates)
+		}
 	}
-	return candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks}
+	out := candidateSet{RouteName: decision.Name, IDs: candidates, Fallbacks: fallbacks}
+	return g.applyCanary(req, out, decision.Canary, canaryCandidates)
+}
+
+func (g *Gateway) applyCanary(req core.Request, candidates candidateSet, rule CanaryRule, canaryCandidates []core.BackendID) candidateSet {
+	if rule.Backend == "" || !canaryAssigned(req, rule) {
+		return candidates
+	}
+	if reason, disabled := g.canaries.Disabled(candidates.RouteName); disabled {
+		candidates.Canary = CanaryDecision{
+			Backend:        rule.Backend,
+			RollbackReason: reason,
+		}
+		return candidates
+	}
+	if !containsBackend(canaryCandidates, rule.Backend) {
+		g.canaries.Disable(candidates.RouteName, "backend_unavailable")
+		candidates.Canary = CanaryDecision{
+			Backend:        rule.Backend,
+			RollbackReason: "backend_unavailable",
+		}
+		return candidates
+	}
+
+	if rule.Shadow {
+		candidates.Canary = CanaryDecision{
+			Mode:    CanaryModeShadow,
+			Backend: rule.Backend,
+		}
+		return candidates
+	}
+
+	stable := append([]core.BackendID(nil), candidates.Fallbacks...)
+	stable = appendMissingBackends(stable, candidates.IDs...)
+	candidates.IDs = []core.BackendID{rule.Backend}
+	candidates.Fallbacks = stable
+	candidates.Canary = CanaryDecision{
+		Mode:    CanaryModeLive,
+		Backend: rule.Backend,
+	}
+	return candidates
 }
 
 func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates candidateSet) (core.Response, error) {
@@ -232,7 +283,7 @@ func (g *Gateway) callRouted(ctx context.Context, req core.Request, candidates c
 		}
 		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, choice, len(remaining))
 		attempts = append(attempts, choice)
-		resp, err := g.callBackend(ctx, req, choice, candidates.RouteName)
+		resp, err := g.callBackend(ctx, req, choice, candidates.RouteName, candidates.Canary)
 		resp = annotateResponse(resp, attempts, 0, candidates.RouteName)
 		if !errors.Is(err, ErrLoadShed) {
 			return resp, err
@@ -261,7 +312,7 @@ func (g *Gateway) callWithFallbacks(ctx context.Context, req core.Request, candi
 		}
 		g.observer.RecordRoute(ctx, "data-plane", g.router.Name(), req.ID, id, len(chain)-len(attempts))
 		attempts = append(attempts, id)
-		resp, err := g.callBackend(ctx, req, id, candidates.RouteName)
+		resp, err := g.callBackend(ctx, req, id, candidates.RouteName, candidates.Canary)
 		spent += resp.CostUSD
 		fallbackCount := fallbackCountForAttempts(attempts)
 		resp = annotateResponse(resp, attempts, fallbackCount, candidates.RouteName)
@@ -292,7 +343,7 @@ func (g *Gateway) streamWithFallbacks(ctx context.Context, req core.Request, can
 		g.observer.RecordRoute(ctx, "data-plane-stream", g.router.Name(), req.ID, id, len(chain)-len(attempts))
 		attempts = append(attempts, id)
 		fallbackCount := fallbackCountForAttempts(attempts)
-		stream, err := g.streamBackend(ctx, req, id, candidates.RouteName, attempts, fallbackCount)
+		stream, err := g.streamBackend(ctx, req, id, candidates.RouteName, candidates.Canary, attempts, fallbackCount)
 		if err == nil {
 			return stream, nil
 		}
@@ -337,7 +388,7 @@ func (g *Gateway) callHedged(ctx context.Context, req core.Request, candidates c
 	called := map[core.BackendID]bool{primary: true}
 	var first callResult
 
-	g.startCall(runCtx, req, primary, candidates.RouteName, results, nil)
+	g.startCall(runCtx, req, primary, candidates.RouteName, candidates.Canary, results, nil)
 	timer := g.clock.After(g.hedgeDelay(req, primary))
 
 	for completed < started {
@@ -440,12 +491,12 @@ func (r callResult) ok() bool {
 	return r.err == nil && !r.resp.Errored
 }
 
-func (g *Gateway) startCall(ctx context.Context, req core.Request, id core.BackendID, routeName string, results chan<- callResult, done Release) {
+func (g *Gateway) startCall(ctx context.Context, req core.Request, id core.BackendID, routeName string, canary CanaryDecision, results chan<- callResult, done Release) {
 	go func() {
 		if done != nil {
 			defer done()
 		}
-		resp, err := g.callBackend(ctx, req, id, routeName)
+		resp, err := g.callBackend(ctx, req, id, routeName, canary)
 		results <- callResult{resp: resp, err: err}
 	}()
 }
@@ -461,8 +512,20 @@ func (g *Gateway) startHedge(ctx context.Context, req core.Request, called map[c
 	}
 	called[backup] = true
 	g.observer.RecordRoute(ctx, "data-plane-hedge", g.router.Name(), req.ID, backup, len(candidates.IDs))
-	g.startCall(ctx, req, backup, candidates.RouteName, results, release)
+	g.startCall(ctx, req, backup, candidates.RouteName, candidates.Canary, results, release)
 	return true
+}
+
+func (g *Gateway) startShadow(ctx context.Context, req core.Request, candidates candidateSet) {
+	if candidates.Canary.Mode != CanaryModeShadow || candidates.Canary.Backend == "" {
+		return
+	}
+	go func() {
+		resp, err := g.callBackend(ctx, req, candidates.Canary.Backend, candidates.RouteName, candidates.Canary)
+		if err != nil || resp.Errored {
+			return
+		}
+	}()
 }
 
 func (g *Gateway) acquireHedge() (Release, bool) {
@@ -482,7 +545,7 @@ func (g *Gateway) acquireHedge() (Release, bool) {
 	}
 }
 
-func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string) (core.Response, error) {
+func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string, canary CanaryDecision) (core.Response, error) {
 	ctx, span := g.observer.Start(ctx, "backend.call",
 		attribute.String("request.id", req.ID),
 		attribute.String("backend.id", string(id)),
@@ -492,7 +555,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	release, ok := g.acquire(req, id)
 	if !ok {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
+		g.canaries.Observe(resp, ErrLoadShed)
 		return resp, ErrLoadShed
 	}
 	defer release()
@@ -500,7 +565,9 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	b := g.backends[id]
 	if b == nil {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
+		g.canaries.Observe(resp, ErrMissing)
 		return resp, ErrMissing
 	}
 
@@ -517,6 +584,7 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 	if resp.Backend == "" {
 		resp.Backend = id
 	}
+	resp = annotateCanaryResponse(resp, canary)
 	if shouldObserve(err) {
 		if err == nil {
 			g.router.Observe(ctx, id, resp)
@@ -529,14 +597,17 @@ func (g *Gateway) callBackend(ctx context.Context, req core.Request, id core.Bac
 		g.hedgeLatencies.Observe(id, resp.LatencyMs)
 	}
 	g.observer.RecordResponse(ctx, resp, err)
+	g.canaries.Observe(resp, err)
 	return resp, err
 }
 
-func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string, attempts []core.BackendID, fallbackCount int) (core.Stream, error) {
+func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.BackendID, routeName string, canary CanaryDecision, attempts []core.BackendID, fallbackCount int) (core.Stream, error) {
 	release, ok := g.acquire(req, id)
 	if !ok {
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observer.RecordResponse(ctx, resp, ErrLoadShed)
+		g.canaries.Observe(resp, ErrLoadShed)
 		return nil, ErrLoadShed
 	}
 
@@ -544,14 +615,18 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	if b == nil {
 		release()
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observer.RecordResponse(ctx, resp, ErrMissing)
+		g.canaries.Observe(resp, ErrMissing)
 		return nil, ErrMissing
 	}
 	streamBackend, ok := b.(backend.StreamBackend)
 	if !ok {
 		release()
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observer.RecordResponse(ctx, resp, ErrStreaming)
+		g.canaries.Observe(resp, ErrStreaming)
 		return nil, ErrStreaming
 	}
 
@@ -559,6 +634,7 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 	if err != nil {
 		release()
 		resp := core.Response{RequestID: req.ID, TenantID: req.TenantID, RouteName: routeName, Backend: id, Outcome: core.Outcome{Errored: true}}
+		resp = annotateCanaryResponse(resp, canary)
 		g.observeStreamResponse(ctx, id, resp, err)
 		return nil, err
 	}
@@ -568,6 +644,7 @@ func (g *Gateway) streamBackend(ctx context.Context, req core.Request, id core.B
 		req:           req,
 		id:            id,
 		routeName:     routeName,
+		canary:        canary,
 		attempts:      append([]core.BackendID(nil), attempts...),
 		fallbackCount: fallbackCount,
 		stream:        stream,
@@ -585,6 +662,7 @@ func (g *Gateway) observeStreamResponse(ctx context.Context, id core.BackendID, 
 		}
 	}
 	g.observer.RecordResponse(ctx, resp, err)
+	g.canaries.Observe(resp, err)
 }
 
 type gatewayStream struct {
@@ -593,6 +671,7 @@ type gatewayStream struct {
 	req           core.Request
 	id            core.BackendID
 	routeName     string
+	canary        CanaryDecision
 	attempts      []core.BackendID
 	fallbackCount int
 	stream        core.Stream
@@ -615,6 +694,7 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 	if chunk.Backend == "" {
 		chunk.Backend = s.id
 	}
+	chunk = annotateCanaryChunk(chunk, s.canary)
 	chunk = annotateStreamChunk(chunk, s.attempts, s.fallbackCount)
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
@@ -633,6 +713,7 @@ func (s *gatewayStream) Recv() (core.StreamChunk, error) {
 			OutputText: "",
 			Outcome:    chunk.Outcome,
 		}
+		resp = annotateCanaryResponse(resp, s.canary)
 		s.observe(resp, nil)
 		s.closeRelease()
 	}
@@ -659,6 +740,18 @@ func (s *gatewayStream) AttemptedBackends() []core.BackendID {
 
 func (s *gatewayStream) FallbackCount() int {
 	return s.fallbackCount
+}
+
+func (s *gatewayStream) CanaryMode() string {
+	return s.canary.Mode
+}
+
+func (s *gatewayStream) CanaryBackend() core.BackendID {
+	return s.canary.Backend
+}
+
+func (s *gatewayStream) CanaryRollback() string {
+	return s.canary.RollbackReason
 }
 
 func (s *gatewayStream) observe(resp core.Response, err error) {

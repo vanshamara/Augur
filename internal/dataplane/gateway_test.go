@@ -14,6 +14,7 @@ import (
 
 	"github.com/vanshamara/Augur/internal/backend"
 	"github.com/vanshamara/Augur/internal/clock"
+	"github.com/vanshamara/Augur/internal/control"
 	"github.com/vanshamara/Augur/internal/core"
 	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/router"
@@ -322,6 +323,284 @@ func TestGatewayReturnsCompatibilityErrorWhenNoBackendSupportsTask(t *testing.T)
 	}
 	if chat.calls.Load() != 0 {
 		t.Fatalf("incompatible backend was called %d times", chat.calls.Load())
+	}
+}
+
+func TestCanaryAssignmentPercentages(t *testing.T) {
+	rule := CanaryRule{Backend: "candidate", Percent: 5, StickyKey: "request_id"}
+	if canaryAssigned(core.Request{ID: "req"}, CanaryRule{Backend: "candidate", Percent: 0}) {
+		t.Fatal("0 percent canary should never assign")
+	}
+	if !canaryAssigned(core.Request{ID: "req"}, CanaryRule{Backend: "candidate", Percent: 100}) {
+		t.Fatal("100 percent canary should always assign")
+	}
+
+	assigned := 0
+	for i := 0; i < 1000; i++ {
+		req := core.Request{ID: "req-" + itoa(i)}
+		if canaryAssigned(req, rule) {
+			assigned++
+		}
+	}
+	if assigned < 30 || assigned > 70 {
+		t.Fatalf("5 percent assignment got %d of 1000", assigned)
+	}
+}
+
+func TestCanaryAssignmentUsesStickyUserID(t *testing.T) {
+	rule := CanaryRule{Backend: "candidate", Percent: 50, StickyKey: "user_id"}
+	first := canaryAssigned(core.Request{ID: "req-a", UserID: "user-1"}, rule)
+	second := canaryAssigned(core.Request{ID: "req-b", UserID: "user-1"}, rule)
+
+	if first != second {
+		t.Fatal("same user id should produce sticky canary assignment")
+	}
+}
+
+func TestGatewayRoutesCanaryAtHundredPercent(t *testing.T) {
+	stable := &fakeBackend{id: "stable"}
+	candidate := &fakeBackend{id: "candidate"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 100,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "candidate" || resp.CanaryMode != CanaryModeLive || resp.CanaryBackend != "candidate" {
+		t.Fatalf("canary response got %+v", resp)
+	}
+	if stable.calls.Load() != 0 || candidate.calls.Load() != 1 {
+		t.Fatalf("calls got stable=%d candidate=%d", stable.calls.Load(), candidate.calls.Load())
+	}
+}
+
+func TestGatewaySkipsCanaryAtZeroPercent(t *testing.T) {
+	stable := &fakeBackend{id: "stable"}
+	candidate := &fakeBackend{id: "candidate"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 0,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.CanaryMode != "" || candidate.calls.Load() != 0 {
+		t.Fatalf("zero percent canary got resp=%+v candidate calls=%d", resp, candidate.calls.Load())
+	}
+}
+
+func TestGatewayCanaryShadowDoesNotReturnShadowResponse(t *testing.T) {
+	stable := &fakeBackend{
+		id: "stable",
+		response: core.Response{
+			OutputText: "stable answer",
+		},
+	}
+	candidate := &fakeBackend{
+		id: "candidate",
+		response: core.Response{
+			OutputText: "shadow answer",
+		},
+	}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 100,
+					Shadow:  true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.OutputText != "stable answer" || resp.CanaryMode != CanaryModeShadow {
+		t.Fatalf("shadow response got %+v", resp)
+	}
+	waitFor(t, func() bool {
+		return candidate.calls.Load() == 1
+	})
+}
+
+func TestGatewayRollsBackCanaryOnErrorRate(t *testing.T) {
+	stable := &fakeBackend{id: "stable"}
+	candidate := &fakeBackend{id: "candidate", err: fakeStatusError{status: 500}}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 100,
+				},
+			},
+		},
+		Canary: CanaryConfig{
+			Rollback: control.RollbackConfig{
+				MaxErrorRate: 0.01,
+				MinSamples:   1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "first"})
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.FallbackCount != 1 {
+		t.Fatalf("first response got %+v", resp)
+	}
+
+	resp, err = gateway.Call(context.Background(), core.Request{ID: "second"})
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.CanaryRollback != "error_rate" {
+		t.Fatalf("rolled back response got %+v", resp)
+	}
+	if candidate.calls.Load() != 1 {
+		t.Fatalf("candidate should be called once before rollback, got %d", candidate.calls.Load())
+	}
+}
+
+func TestGatewayRollsBackCanaryOnLatencyRegression(t *testing.T) {
+	stable := &fakeBackend{
+		id: "stable",
+		response: core.Response{
+			Outcome: core.Outcome{LatencyMs: 100},
+		},
+	}
+	candidate := &fakeBackend{
+		id: "candidate",
+		response: core.Response{
+			Outcome: core.Outcome{LatencyMs: 200},
+		},
+	}
+	rule := CanaryRule{Backend: "candidate", Percent: 50, StickyKey: "request_id"}
+	stableReq := canaryTestRequest(t, rule, false)
+	canaryReq := canaryTestRequest(t, rule, true)
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary:     rule,
+			},
+		},
+		Canary: CanaryConfig{
+			Rollback: control.RollbackConfig{
+				P95RegressionRatio: 0.10,
+				MaxErrorRate:       1,
+				MinSamples:         1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	if _, err := gateway.Call(context.Background(), stableReq); err != nil {
+		t.Fatalf("stable call: %v", err)
+	}
+	resp, err := gateway.Call(context.Background(), canaryReq)
+	if err != nil {
+		t.Fatalf("canary call: %v", err)
+	}
+	if resp.Backend != "candidate" {
+		t.Fatalf("canary response got %+v", resp)
+	}
+	resp, err = gateway.Call(context.Background(), canaryReq)
+	if err != nil {
+		t.Fatalf("rolled back call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.CanaryRollback != "latency_regression" {
+		t.Fatalf("rolled back response got %+v", resp)
+	}
+}
+
+func TestGatewayRollsBackCanaryWhenBackendUnavailable(t *testing.T) {
+	stable := &fakeBackend{id: "stable"}
+	candidate := &fakeBackend{id: "candidate"}
+	health := NewHealthFilter([]core.BackendID{"stable", "candidate"})
+	health.Set("candidate", false)
+	gateway, err := New(Config{
+		Router:   router.NewStatic("stable"),
+		Backends: []backend.Backend{stable, candidate},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"stable"},
+				Canary: CanaryRule{
+					Backend: "candidate",
+					Percent: 100,
+				},
+			},
+		},
+		Filters: []Filter{health},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{ID: "req"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "stable" || resp.CanaryRollback != "backend_unavailable" {
+		t.Fatalf("unavailable canary response got %+v", resp)
+	}
+	if candidate.calls.Load() != 0 {
+		t.Fatalf("unavailable canary was called %d times", candidate.calls.Load())
 	}
 }
 
@@ -1232,6 +1511,18 @@ func endedSpanNames(spans []sdktrace.ReadOnlySpan) map[string]bool {
 
 func instantBackend(id core.BackendID) backend.Backend {
 	return &fakeBackend{id: id}
+}
+
+func canaryTestRequest(t *testing.T, rule CanaryRule, assigned bool) core.Request {
+	t.Helper()
+	for i := 0; i < 10_000; i++ {
+		req := core.Request{ID: "canary-req-" + itoa(i)}
+		if canaryAssigned(req, rule) == assigned {
+			return req
+		}
+	}
+	t.Fatalf("could not find canary assignment %v", assigned)
+	return core.Request{}
 }
 
 func waitFor(t *testing.T, done func() bool) {
