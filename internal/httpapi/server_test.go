@@ -390,7 +390,8 @@ func TestChatCompletionsUsesRequestMetadata(t *testing.T) {
 			"augur_request_type":"reasoning",
 			"augur_user_tier":"premium",
 			"augur_latency_budget_ms":"2400",
-			"augur_cost_budget_usd":"0.05"
+			"augur_cost_budget_usd":"0.05",
+			"augur_prompt_tokens":"1234"
 		},
 		"messages":[{"role":"user","content":"solve a hard problem"}]
 	}`
@@ -411,6 +412,9 @@ func TestChatCompletionsUsesRequestMetadata(t *testing.T) {
 	if gateway.req.Features.LatencyBudgetMs != 2400 || gateway.req.Features.CostBudget != 0.05 {
 		t.Fatalf("request budgets got %+v", gateway.req.Features)
 	}
+	if gateway.req.Features.PromptTokens != 1234 {
+		t.Fatalf("prompt tokens got %d", gateway.req.Features.PromptTokens)
+	}
 }
 
 func TestChatCompletionsHeadersOverrideRequestMetadata(t *testing.T) {
@@ -422,7 +426,8 @@ func TestChatCompletionsHeadersOverrideRequestMetadata(t *testing.T) {
 			"augur_request_type":"chat",
 			"augur_user_tier":"standard",
 			"augur_latency_budget_ms":"1800",
-			"augur_cost_budget_usd":"0.02"
+			"augur_cost_budget_usd":"0.02",
+			"augur_prompt_tokens":"200"
 		},
 		"messages":[{"role":"user","content":"ship this feature"}]
 	}`
@@ -431,6 +436,7 @@ func TestChatCompletionsHeadersOverrideRequestMetadata(t *testing.T) {
 	req.Header.Set("X-Augur-User-Tier", "enterprise")
 	req.Header.Set("X-Augur-Latency-Budget-Ms", "900")
 	req.Header.Set("X-Augur-Cost-Budget-USD", "0.10")
+	req.Header.Set("X-Augur-Prompt-Tokens", "77")
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -447,6 +453,9 @@ func TestChatCompletionsHeadersOverrideRequestMetadata(t *testing.T) {
 	if gateway.req.Features.LatencyBudgetMs != 900 || gateway.req.Features.CostBudget != 0.10 {
 		t.Fatalf("request budgets got %+v", gateway.req.Features)
 	}
+	if gateway.req.Features.PromptTokens != 77 {
+		t.Fatalf("prompt tokens got %d", gateway.req.Features.PromptTokens)
+	}
 }
 
 func TestChatCompletionsRejectsInvalidRequestMetadata(t *testing.T) {
@@ -457,6 +466,20 @@ func TestChatCompletionsRejectsInvalidRequestMetadata(t *testing.T) {
 		"messages":[{"role":"user","content":"hello"}]
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletionsRejectsInvalidPromptTokenHeader(t *testing.T) {
+	server := testServer(t, &fakeGateway{})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Augur-Prompt-Tokens", "0")
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)

@@ -161,6 +161,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   -H "X-Augur-User-ID: user-123" \
   -H "X-Augur-Latency-Budget-Ms: 2400" \
   -H "X-Augur-Cost-Budget-USD: 0.05" \
+  -H "X-Augur-Prompt-Tokens: 820" \
   -d '{
     "model": "augur-chat",
     "messages": [
@@ -169,8 +170,9 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
-The bandit uses these hints, token estimates, and real outcomes to learn which
-backend fits each request shape.
+The bandit uses these hints, token counts, and real outcomes to learn which
+backend fits each request shape. If `X-Augur-Prompt-Tokens` is missing, Augur
+uses a local text-length estimate before routing.
 
 Learning is an optional advanced mode. Routing works without it. Health, latency,
 cost, task type, canary, and fallback all run with any router, so you can keep
@@ -190,7 +192,9 @@ model, so it does not add routing cost.
 When a request carries a cost budget, Augur estimates the most each primary,
 fallback, or canary backend could cost before routing and drops the ones that
 would go over budget. If every backend is over budget, the request fails with a
-clear over-budget error instead of calling an expensive model.
+clear over-budget error instead of calling an expensive model. Set
+`budgets.require_pricing: true` to also drop unpriced backends from budgeted
+requests.
 
 The request-aware example uses quality as a floor and then optimizes latency and
 cost among the feasible backends. This keeps cheaper models in play without
@@ -279,6 +283,7 @@ router:
   type: "cost_aware"
 budgets:
   cost_budget_usd: 0.02
+  require_pricing: true
 ```
 
 Reading the example:
@@ -346,6 +351,8 @@ Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
 ## Security
 
 Do not commit API keys or real deployment config.
+Set `AUGUR_GATEWAY_API_KEYS` for shared, remote, or public deployments. It
+protects `/v1/chat/completions`, `/debug/backends`, and `/debug/decisions`.
 
 The repo ignores common local secret paths:
 

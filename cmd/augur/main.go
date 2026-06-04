@@ -73,6 +73,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Capabilities:    buildBackendCapabilities(config.Backends),
 		Canary:          buildCanaryConfig(config.Canary),
 		Pricing:         buildBackendPricing(config.Backends),
+		RequirePricing:  config.Budgets.RequirePricing,
 		Decisions:       decisions,
 		BackendTimeouts: buildBackendTimeouts(config.Backends),
 		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,

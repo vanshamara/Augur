@@ -43,6 +43,7 @@ type Config struct {
 	Capabilities    map[core.BackendID][]core.RequestType
 	Canary          CanaryConfig
 	Pricing         map[core.BackendID]BackendPrice
+	RequirePricing  bool
 	Decisions       *DecisionLog
 	BackendTimeouts map[core.BackendID]time.Duration
 	ActiveHealth    bool
@@ -62,6 +63,7 @@ type Gateway struct {
 	capabilities    map[core.BackendID]map[core.RequestType]bool
 	canaries        *CanaryTable
 	pricing         map[core.BackendID]BackendPrice
+	requirePricing  bool
 	decisions       *DecisionLog
 	status          *backendStatusTable
 	timeouts        map[core.BackendID]time.Duration
@@ -116,6 +118,7 @@ func New(config Config) (*Gateway, error) {
 		capabilities:    capabilities,
 		canaries:        NewCanaryTable(config.Canary),
 		pricing:         copyPricing(config.Pricing),
+		requirePricing:  config.RequirePricing,
 		decisions:       config.Decisions,
 		status:          newBackendStatusTable(ids, config.BackendTimeouts),
 		timeouts:        copyTimeouts(config.BackendTimeouts),

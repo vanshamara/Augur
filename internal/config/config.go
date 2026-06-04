@@ -212,6 +212,7 @@ type Budgets struct {
 	CostBudgetUSD       float64  `json:"cost_budget_usd"`
 	MaxCompletionTokens int      `json:"max_completion_tokens"`
 	Temperature         *float64 `json:"temperature"`
+	RequirePricing      bool     `json:"require_pricing"`
 }
 
 type Duration struct {

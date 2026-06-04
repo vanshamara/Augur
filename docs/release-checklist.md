@@ -36,7 +36,8 @@ Use this before making the repo public or cutting a release.
 - [ ] Run the multi-backend routing smoke test.
 - [ ] Run a real chat smoke test with a small model before public launch.
 - [ ] Verify `/healthz` and `/readyz` work without gateway auth.
-- [ ] Verify `/v1/chat/completions` requires auth when `AUGUR_GATEWAY_API_KEYS` is set.
+- [ ] Verify `/v1/chat/completions` and `/debug/*` require auth when
+  `AUGUR_GATEWAY_API_KEYS` is set.
 
 ## Publish
 

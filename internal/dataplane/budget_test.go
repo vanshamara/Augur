@@ -108,6 +108,58 @@ func TestGatewayKeepsBackendWithUnknownPrice(t *testing.T) {
 	}
 }
 
+func TestGatewayRequiresPricingForBudgetedRequest(t *testing.T) {
+	unpriced := &fakeBackend{id: "unpriced"}
+	gateway, err := New(Config{
+		Router:         router.NewStatic("unpriced"),
+		Backends:       []backend.Backend{unpriced},
+		RequirePricing: true,
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"unpriced"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), budgetRequest(0.01))
+	if !errors.Is(err, ErrOverBudget) {
+		t.Fatalf("expected over-budget error for unpriced backend, got %v", err)
+	}
+	if unpriced.calls.Load() != 0 {
+		t.Fatalf("unpriced backend was called %d times", unpriced.calls.Load())
+	}
+}
+
+func TestGatewayAllowsUnpricedBackendWithoutBudgetWhenPricingRequired(t *testing.T) {
+	unpriced := &fakeBackend{id: "unpriced"}
+	gateway, err := New(Config{
+		Router:         router.NewStatic("unpriced"),
+		Backends:       []backend.Backend{unpriced},
+		RequirePricing: true,
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"unpriced"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), budgetRequest(0))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "unpriced" {
+		t.Fatalf("backend got %q", resp.Backend)
+	}
+}
+
 func TestGatewaySkipsOverBudgetCanaryForOneRequest(t *testing.T) {
 	stable := &fakeBackend{id: "stable"}
 	candidate := &fakeBackend{id: "candidate"}

@@ -28,8 +28,7 @@ func copyPricing(pricing map[core.BackendID]BackendPrice) map[core.BackendID]Bac
 }
 
 // estimateMaxCostUSD returns the largest cost the request could reach on one
-// backend. It returns false when the backend has no price, since an unknown
-// price should not exclude a candidate.
+// backend. It returns false when the backend has no price.
 func (g *Gateway) estimateMaxCostUSD(req core.Request, id core.BackendID) (float64, bool) {
 	price, ok := g.pricing[id]
 	if !ok {
@@ -74,7 +73,13 @@ func (g *Gateway) affordableBackends(req core.Request, candidates []core.Backend
 	out := make([]core.BackendID, 0, len(candidates))
 	for _, id := range candidates {
 		cost, ok := g.estimateMaxCostUSD(req, id)
-		if !ok || cost <= budget {
+		if !ok {
+			if !g.requirePricing {
+				out = append(out, id)
+			}
+			continue
+		}
+		if cost <= budget {
 			out = append(out, id)
 		}
 	}

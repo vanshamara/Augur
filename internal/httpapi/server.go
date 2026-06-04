@@ -56,6 +56,7 @@ type requestOptions struct {
 	RequestType     core.RequestType
 	LatencyBudgetMs int
 	CostBudgetUSD   float64
+	PromptTokens    int
 	UserTier        string
 	UserID          string
 }
@@ -379,6 +380,10 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantI
 	if requestType == "" {
 		requestType = core.Chat
 	}
+	promptTokens := options.PromptTokens
+	if promptTokens == 0 {
+		promptTokens = estimateTokens(prompt)
+	}
 	return core.Request{
 		ID:                  id,
 		TenantID:            tenantID,
@@ -388,7 +393,7 @@ func (r chatCompletionRequest) coreRequest(id string, fallbackID string, tenantI
 		MaxCompletionTokens: r.maxCompletionTokens(defaults.MaxCompletionTokens),
 		Temperature:         r.temperature(defaults.Temperature),
 		Features: core.Features{
-			PromptTokens:    estimateTokens(prompt),
+			PromptTokens:    promptTokens,
 			Type:            requestType,
 			LatencyBudgetMs: defaults.LatencyBudgetMs,
 			CostBudget:      defaults.CostBudgetUSD,
@@ -676,7 +681,7 @@ func requestOptionsFrom(r *http.Request, body chatCompletionRequest) (requestOpt
 	if err := options.applyHeaders(r.Header); err != nil {
 		return requestOptions{}, err
 	}
-	options.applyInference(inferRequestOptions(body, options.RequestType))
+	options.applyInference(inferRequestOptions(body, options.RequestType, options.PromptTokens))
 	return options, nil
 }
 
@@ -707,6 +712,12 @@ func requestOptionsFromMetadata(metadata map[string]string) (requestOptions, err
 			return requestOptions{}, err
 		}
 	}
+	if value := metadataValue(metadata, "augur_prompt_tokens", "prompt_tokens"); value != "" {
+		options.PromptTokens, err = parsePositiveInt(value, "prompt tokens")
+		if err != nil {
+			return requestOptions{}, err
+		}
+	}
 	return options, nil
 }
 
@@ -732,6 +743,12 @@ func (o *requestOptions) applyHeaders(headers http.Header) error {
 	}
 	if value := headers.Get("X-Augur-Cost-Budget-USD"); value != "" {
 		o.CostBudgetUSD, err = parsePositiveFloat(value, "cost budget")
+		if err != nil {
+			return err
+		}
+	}
+	if value := headers.Get("X-Augur-Prompt-Tokens"); value != "" {
+		o.PromptTokens, err = parsePositiveInt(value, "prompt tokens")
 		if err != nil {
 			return err
 		}

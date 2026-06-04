@@ -16,9 +16,12 @@ const (
 	codingCostBudgetUSD      = 0.03
 )
 
-func inferRequestOptions(body chatCompletionRequest, explicitType core.RequestType) requestOptions {
+func inferRequestOptions(body chatCompletionRequest, explicitType core.RequestType, promptTokens int) requestOptions {
 	prompt := body.promptText()
-	tokens := estimateTokens(prompt)
+	tokens := promptTokens
+	if tokens == 0 {
+		tokens = estimateTokens(prompt)
+	}
 	requestType := explicitType
 	if requestType == "" {
 		requestType = inferRequestType(prompt, tokens)

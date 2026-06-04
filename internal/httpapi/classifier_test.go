@@ -13,7 +13,7 @@ func TestInferRequestOptionsClassifiesReasoning(t *testing.T) {
 		},
 	}
 
-	options := inferRequestOptions(body, "")
+	options := inferRequestOptions(body, "", 0)
 	if options.RequestType != core.Reasoning {
 		t.Fatalf("request type got %q", options.RequestType)
 	}
@@ -29,7 +29,7 @@ func TestInferRequestOptionsClassifiesCoding(t *testing.T) {
 		},
 	}
 
-	options := inferRequestOptions(body, "")
+	options := inferRequestOptions(body, "", 0)
 	if options.RequestType != core.Coding {
 		t.Fatalf("request type got %q", options.RequestType)
 	}
@@ -45,7 +45,7 @@ func TestInferRequestOptionsKeepsSimplePromptsCheap(t *testing.T) {
 		},
 	}
 
-	options := inferRequestOptions(body, "")
+	options := inferRequestOptions(body, "", 0)
 	if options.RequestType != core.Chat {
 		t.Fatalf("request type got %q", options.RequestType)
 	}
@@ -61,11 +61,24 @@ func TestInferRequestOptionsRespectsExplicitType(t *testing.T) {
 		},
 	}
 
-	options := inferRequestOptions(body, core.Chat)
+	options := inferRequestOptions(body, core.Chat, 0)
 	if options.RequestType != core.Chat {
 		t.Fatalf("request type got %q", options.RequestType)
 	}
 	if options.CostBudgetUSD != 0 {
 		t.Fatalf("explicit chat should not inherit coding budget, got %+v", options)
+	}
+}
+
+func TestInferRequestOptionsUsesPromptTokenHint(t *testing.T) {
+	body := chatCompletionRequest{
+		Messages: []chatMessage{
+			{Role: "user", Content: messageContent{Text: "summarize this"}},
+		},
+	}
+
+	options := inferRequestOptions(body, "", 900)
+	if options.RequestType != core.Reasoning {
+		t.Fatalf("request type got %q", options.RequestType)
 	}
 }

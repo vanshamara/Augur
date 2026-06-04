@@ -121,7 +121,7 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			"exploration": {"cold_start_budget": 0.03, "judge_sample_rate": 0.1, "uncertainty_sampling": true},
 			"on_infeasible": "fail_closed"
 		},
-		"budgets": {"latency_budget_ms": 1200, "cost_budget_usd": 0.01, "max_completion_tokens": 256, "temperature": 0.2}
+		"budgets": {"latency_budget_ms": 1200, "cost_budget_usd": 0.01, "max_completion_tokens": 256, "temperature": 0.2, "require_pricing": true}
 	}`)
 
 	config, err := Parse(data)
@@ -209,6 +209,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Budgets.Temperature == nil || *config.Budgets.Temperature != 0.2 {
 		t.Fatalf("temperature got %v", config.Budgets.Temperature)
+	}
+	if !config.Budgets.RequirePricing {
+		t.Fatal("require pricing should be true")
 	}
 }
 
@@ -452,6 +455,7 @@ budgets:
   cost_budget_usd: 0.01
   max_completion_tokens: 256
   temperature: 0.2
+  require_pricing: true
 `)
 
 	config, err := ParseYAML(data)
@@ -494,6 +498,9 @@ budgets:
 	}
 	if !config.Learning.Persistence.Enabled || config.Learning.Persistence.SaveEvery != 4 {
 		t.Fatalf("persistence got %+v", config.Learning.Persistence)
+	}
+	if !config.Budgets.RequirePricing {
+		t.Fatal("require pricing should be true")
 	}
 }
 
@@ -880,6 +887,9 @@ func TestCostAwareExampleDemonstratesBudgetExclusion(t *testing.T) {
 			}
 			if strongOutputCost <= config.Budgets.CostBudgetUSD {
 				t.Fatalf("strong backend should exceed the example budget, cost=%v budget=%v", strongOutputCost, config.Budgets.CostBudgetUSD)
+			}
+			if !config.Budgets.RequirePricing {
+				t.Fatal("cost-aware example should require pricing for budgeted requests")
 			}
 		})
 	}

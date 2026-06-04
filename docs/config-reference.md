@@ -376,6 +376,7 @@ budgets:
   cost_budget_usd: 0.01
   max_completion_tokens: 512
   temperature: 0.2
+  require_pricing: true
 ```
 
 These are request defaults used by the HTTP API. Tenant policy values can
@@ -388,8 +389,9 @@ backend prices. The HTTP API estimates prompt tokens locally from text length
 before routing, so leave margin in tight budgets. Augur drops backends whose
 estimate is over the budget. If every candidate is over budget, the request
 fails with a clear over-budget error instead of calling an expensive backend.
-Backends without a configured price are not dropped, since their cost cannot be
-estimated.
+By default, backends without a configured price are not dropped, since their
+cost cannot be estimated. Set `require_pricing: true` to exclude unpriced
+backends from requests that carry a cost budget.
 
 The HTTP response can include these cost headers:
 
@@ -408,6 +410,7 @@ X-Augur-User-Tier: premium
 X-Augur-User-ID: user-123
 X-Augur-Latency-Budget-Ms: 2400
 X-Augur-Cost-Budget-USD: 0.05
+X-Augur-Prompt-Tokens: 820
 ```
 
 Supported request types are `chat`, `reasoning`, `coding`, and `embedding`.
@@ -415,7 +418,8 @@ Supported request types are `chat`, `reasoning`, `coding`, and `embedding`.
 When these values are missing, Augur infers a request type from the prompt. The
 local classifier sends simple or spam-like prompts toward cheaper chat behavior
 and marks coding or reasoning prompts as higher-need work. Headers and metadata
-override the inferred values.
+override the inferred values. `X-Augur-Prompt-Tokens` lets callers supply a
+known prompt token count for routing and budget estimates.
 
 Request type controls route matching and backend capability filtering. Augur does
 not yet expose first-class image, audio, or video request APIs.
@@ -429,7 +433,8 @@ The same values can be sent in chat request `metadata`:
     "augur_user_tier": "premium",
     "augur_user_id": "user-123",
     "augur_latency_budget_ms": "2400",
-    "augur_cost_budget_usd": "0.05"
+    "augur_cost_budget_usd": "0.05",
+    "augur_prompt_tokens": "820"
   }
 }
 ```

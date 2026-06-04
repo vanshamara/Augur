@@ -100,10 +100,13 @@ X-Augur-User-Tier: premium
 X-Augur-User-ID: user-123
 X-Augur-Latency-Budget-Ms: 2400
 X-Augur-Cost-Budget-USD: 0.05
+X-Augur-Prompt-Tokens: 820
 ```
 
 If clients do not send these headers, Augur uses a local prompt classifier. It
-does not call a model before routing.
+does not call a model before routing. If clients know the prompt token count,
+send `X-Augur-Prompt-Tokens` so budget checks do not rely on the local text
+estimate.
 
 Request type is a routing signal. Route rules can match task type, tenant, and
 user tier. Backend capabilities remove incompatible backends before health
@@ -145,7 +148,8 @@ responses, or API keys.
 
 Use `/readyz` for load balancer readiness checks.
 Use `/debug/backends` and `/debug/decisions` for operator checks. They follow
-gateway auth when auth is enabled.
+gateway auth when auth is enabled. Do not expose debug endpoints on public
+traffic without setting `AUGUR_GATEWAY_API_KEYS`.
 
 The decision log is off by default. Turn it on with `data_plane.decision_log`.
 It keeps the most recent decisions in memory only, and records token counts and
@@ -153,7 +157,8 @@ a hashed canary sticky key, never prompt text or API keys.
 
 ## Auth
 
-Gateway auth is disabled unless `AUGUR_GATEWAY_API_KEYS` is set.
+Gateway auth is disabled unless `AUGUR_GATEWAY_API_KEYS` is set. Set it for any
+shared, remote, or public deployment.
 
 ```bash
 AUGUR_GATEWAY_API_KEYS=first-client-key,second-client-key
@@ -169,7 +174,8 @@ Authorization: Bearer first-client-key
 X-Augur-API-Key: first-client-key
 ```
 
-Auth protects `/v1/chat/completions`. Health endpoints stay public.
+Auth protects `/v1/chat/completions`, `/debug/backends`, and
+`/debug/decisions`. Health endpoints stay public.
 
 ## Runtime Features
 

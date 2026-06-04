@@ -556,10 +556,8 @@ func TestHTTPGatewayRoutesCostAwareToCheapestOpenAIBackend(t *testing.T) {
 		},
 		Backends: []appconfig.Backend{
 			{
-				ID:                 "expensive",
-				Model:              "model-expensive",
-				InputCostPerToken:  0.000010,
-				OutputCostPerToken: 0.000020,
+				ID:    "expensive",
+				Model: "model-expensive",
 			},
 			{
 				ID:                 "cheap",
@@ -570,6 +568,8 @@ func TestHTTPGatewayRoutesCostAwareToCheapestOpenAIBackend(t *testing.T) {
 		},
 		Budgets: appconfig.Budgets{
 			MaxCompletionTokens: 32,
+			CostBudgetUSD:       0.01,
+			RequirePricing:      true,
 		},
 	}, client)
 	gatewayServer := httptest.NewServer(apiServer)
@@ -693,6 +693,8 @@ func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi
 		Routes:          buildRouteRules(config.Routes),
 		Capabilities:    buildBackendCapabilities(config.Backends),
 		Canary:          buildCanaryConfig(config.Canary),
+		Pricing:         buildBackendPricing(config.Backends),
+		RequirePricing:  config.Budgets.RequirePricing,
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
