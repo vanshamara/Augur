@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"io"
 	"sync/atomic"
@@ -18,10 +19,11 @@ import (
 )
 
 var (
-	ErrNoCandidates = errors.New("no backend candidates")
-	ErrLoadShed     = errors.New("request shed by data plane")
-	ErrMissing      = errors.New("backend is not registered")
-	ErrStreaming    = errors.New("backend does not support streaming")
+	ErrNoCandidates           = errors.New("no backend candidates")
+	ErrNoCompatibleCandidates = errors.New("no backend candidates support request type")
+	ErrLoadShed               = errors.New("request shed by data plane")
+	ErrMissing                = errors.New("backend is not registered")
+	ErrStreaming              = errors.New("backend does not support streaming")
 )
 
 type HedgeConfig struct {
@@ -37,6 +39,7 @@ type Config struct {
 	Router          router.Router
 	Backends        []backend.Backend
 	Routes          []RouteRule
+	Capabilities    map[core.BackendID][]core.RequestType
 	Filters         []Filter
 	Clock           clock.Clock
 	Hedge           HedgeConfig
@@ -50,6 +53,7 @@ type Gateway struct {
 	ids             []core.BackendID
 	backends        map[core.BackendID]backend.Backend
 	routes          *RouteSelector
+	capabilities    map[core.BackendID]map[core.RequestType]bool
 	filters         []Filter
 	clock           clock.Clock
 	hedge           HedgeConfig
@@ -90,12 +94,14 @@ func New(config Config) (*Gateway, error) {
 		ids = append(ids, id)
 		backends[id] = b
 	}
+	capabilities := normalizeCapabilities(ids, config.Capabilities)
 
 	return &Gateway{
 		router:          config.Router,
 		ids:             ids,
 		backends:        backends,
 		routes:          NewRouteSelector(config.Routes),
+		capabilities:    capabilities,
 		filters:         append([]Filter(nil), config.Filters...),
 		clock:           config.Clock,
 		hedge:           config.Hedge,
@@ -135,6 +141,9 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 	defer span.End()
 
 	candidates := g.candidates(req)
+	if candidates.Err != nil {
+		return nil, candidates.Err
+	}
 	if len(candidates.IDs) == 0 {
 		return nil, ErrNoCandidates
 	}
@@ -157,6 +166,9 @@ func (g *Gateway) Stream(ctx context.Context, req core.Request) (core.Stream, er
 
 func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Response, error) {
 	candidates := g.candidates(req)
+	if candidates.Err != nil {
+		return core.Response{}, candidates.Err
+	}
 	if len(candidates.IDs) == 0 {
 		return core.Response{}, ErrNoCandidates
 	}
@@ -169,11 +181,23 @@ func (g *Gateway) callUnique(ctx context.Context, req core.Request) (core.Respon
 type candidateSet struct {
 	RouteName string
 	IDs       []core.BackendID
+	Err       error
 }
 
 func (g *Gateway) candidates(req core.Request) candidateSet {
 	decision := g.routes.Select(req, g.ids)
 	candidates := copyCandidates(decision.Candidates)
+	if len(candidates) == 0 {
+		return candidateSet{RouteName: decision.Name}
+	}
+	candidates = g.compatibleCandidates(req, candidates)
+	if len(candidates) == 0 {
+		requestType := requestTypeForCapabilities(req)
+		return candidateSet{
+			RouteName: decision.Name,
+			Err:       fmt.Errorf("%w %q", ErrNoCompatibleCandidates, requestType),
+		}
+	}
 	for _, filter := range g.filters {
 		candidates = filter.Apply(req, candidates)
 		if len(candidates) == 0 {

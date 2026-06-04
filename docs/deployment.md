@@ -101,7 +101,8 @@ If clients do not send these headers, Augur uses a local prompt classifier. It
 does not call a model before routing.
 
 Request type is a routing signal. Route rules can match task type, tenant, and
-user tier. Backend capability filtering is planned V1 work.
+user tier. Backend capabilities remove incompatible backends before health
+filters and router selection.
 
 ## Runtime State
 
@@ -149,6 +150,7 @@ Auth protects `/v1/chat/completions`. Health endpoints stay public.
 
 - Streaming: set `"stream": true`.
 - Hedging: configure `data_plane.hedge`.
+- Backend capabilities: set `backends[].capabilities`.
 - Canary rollback thresholds: configure `canary`. Deterministic percentage
   rollout is planned V1 work.
 - Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
@@ -169,7 +171,6 @@ See [Config reference](config-reference.md) for fields.
 ## Current Gaps
 
 - TLS termination must be handled outside Augur.
-- Backend capability filtering is not included.
 - Deterministic canary percentage rollout is not included.
 - Route-specific fallback chains are not included.
 - Active health checks are not included.

@@ -625,6 +625,23 @@ func TestChatCompletionsMapsGatewayErrors(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsMapsCompatibilityErrors(t *testing.T) {
+	err := dataplane.ErrNoCompatibleCandidates
+	server := testServer(t, &fakeGateway{err: err})
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request type") {
+		t.Fatalf("body did not mention request type: %s", rec.Body.String())
+	}
+}
+
 func TestChatCompletionsMapsUnknownErrors(t *testing.T) {
 	server := testServer(t, &fakeGateway{err: errors.New("backend failed")})
 	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hello"}]}`

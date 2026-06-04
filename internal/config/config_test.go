@@ -23,6 +23,7 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 			{
 				"id": "fast",
 				"model": "model-fast",
+				"capabilities": ["chat", "reasoning"],
 				"input_cost_per_token": 0.001,
 				"output_cost_per_token": 0.002,
 				"max_completion_tokens": 128
@@ -124,6 +125,9 @@ func TestParseLoadsGatewayConfig(t *testing.T) {
 	}
 	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
 		t.Fatalf("backend got %+v", config.Backends[0])
+	}
+	if len(config.Backends[0].Capabilities) != 2 || config.Backends[0].Capabilities[1] != "reasoning" {
+		t.Fatalf("backend capabilities got %+v", config.Backends[0].Capabilities)
 	}
 	if len(config.Routes) != 1 || config.Routes[0].Name != "reasoning-premium" {
 		t.Fatalf("routes got %+v", config.Routes)
@@ -302,6 +306,7 @@ openai:
 backends:
   - id: "fast"
     model: "model-fast"
+    capabilities: ["chat", "reasoning"]
     input_cost_per_token: 0.001
     output_cost_per_token: 0.002
     max_completion_tokens: 128
@@ -407,6 +412,9 @@ budgets:
 	if config.Backends[0].ID != "fast" || config.Backends[0].Model != "model-fast" {
 		t.Fatalf("backend got %+v", config.Backends[0])
 	}
+	if len(config.Backends[0].Capabilities) != 2 || config.Backends[0].Capabilities[1] != "reasoning" {
+		t.Fatalf("backend capabilities got %+v", config.Backends[0].Capabilities)
+	}
 	if len(config.Routes) != 1 || config.Routes[0].Name != "default" {
 		t.Fatalf("routes got %+v", config.Routes)
 	}
@@ -448,6 +456,17 @@ func TestParseRejectsBadRouter(t *testing.T) {
 	_, err := Parse([]byte(`{"router":{"type":"bad"},"backends":[{"model":"model-a"}]}`))
 	if err == nil {
 		t.Fatal("bad router should fail")
+	}
+}
+
+func TestParseRejectsBadBackendCapability(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"backends": [
+			{"id": "a", "model": "model-a", "capabilities": ["image"]}
+		]
+	}`))
+	if err == nil {
+		t.Fatal("bad backend capability should fail")
 	}
 }
 

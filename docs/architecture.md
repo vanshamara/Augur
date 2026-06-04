@@ -18,17 +18,18 @@ client
 1. `cmd/augur` loads config and builds the gateway.
 2. `internal/httpapi` parses `/v1/chat/completions` and request-aware hints.
 3. `internal/dataplane` matches route rules and creates the route candidate set.
-4. `internal/dataplane` applies filters such as health, circuit breaking,
+4. `internal/dataplane` removes backends that do not support the request type.
+5. `internal/dataplane` applies filters such as health, circuit breaking,
    concurrency, tenant limits, hedging, and single flight.
-5. A router chooses one backend from the remaining candidates.
-6. `internal/backend/openai` sends the request to the provider.
-7. Augur returns the response and sets `X-Augur-Backend` and, when a route
+6. A router chooses one backend from the remaining candidates.
+7. `internal/backend/openai` sends the request to the provider.
+8. Augur returns the response and sets `X-Augur-Backend` and, when a route
    matched, `X-Augur-Route`.
-8. If live learning is enabled, `internal/live` updates reward and quality state.
+9. If live learning is enabled, `internal/live` updates reward and quality state.
 
-Route-specific fallback chains, deterministic canary percentage routing, and
-backend capability filtering are planned V1 work. Current fallback behavior is
-limited to load shedding retries and hedging.
+Route-specific fallback chains and deterministic canary percentage routing are
+planned V1 work. Current fallback behavior is limited to load shedding retries
+and hedging.
 
 ## Main Packages
 
@@ -48,6 +49,7 @@ attribution, rollback helpers, and distributed learning simulation.
 
 `internal/dataplane` applies operational controls around routing:
 
+- backend capability filtering
 - health filtering
 - circuit breaking
 - adaptive concurrency

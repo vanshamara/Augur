@@ -732,7 +732,9 @@ func writeGatewayError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 	case errors.Is(err, dataplane.ErrLoadShed):
 		writeError(w, http.StatusTooManyRequests, "rate_limit_error", err.Error())
-	case errors.Is(err, dataplane.ErrNoCandidates), errors.Is(err, dataplane.ErrMissing):
+	case errors.Is(err, dataplane.ErrNoCandidates),
+		errors.Is(err, dataplane.ErrNoCompatibleCandidates),
+		errors.Is(err, dataplane.ErrMissing):
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable", err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, http.StatusGatewayTimeout, "timeout", err.Error())

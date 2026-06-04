@@ -37,7 +37,7 @@ func TestParseBackends(t *testing.T) {
 		t.Fatalf("got %d specs want %d", len(specs), len(want))
 	}
 	for i := range want {
-		if specs[i] != want[i] {
+		if specs[i].ID != want[i].ID || specs[i].Model != want[i].Model {
 			t.Fatalf("spec %d got %+v want %+v", i, specs[i], want[i])
 		}
 	}
@@ -259,6 +259,28 @@ func TestBuildRouteRulesFromConfig(t *testing.T) {
 	}
 	if len(route.Candidates) != 2 || route.Candidates[0] != "strong" || route.Candidates[1] != "balanced" {
 		t.Fatalf("candidates got %+v", route.Candidates)
+	}
+}
+
+func TestBuildBackendCapabilitiesFromConfig(t *testing.T) {
+	capabilities := buildBackendCapabilities([]appconfig.Backend{
+		{
+			ID:           "fast",
+			Model:        "model-fast",
+			Capabilities: []core.RequestType{core.Chat},
+		},
+		{
+			ID:           "strong",
+			Model:        "model-strong",
+			Capabilities: []core.RequestType{core.Reasoning, core.Coding},
+		},
+	})
+
+	if len(capabilities["fast"]) != 1 || capabilities["fast"][0] != core.Chat {
+		t.Fatalf("fast capabilities got %+v", capabilities["fast"])
+	}
+	if len(capabilities["strong"]) != 2 || capabilities["strong"][1] != core.Coding {
+		t.Fatalf("strong capabilities got %+v", capabilities["strong"])
 	}
 }
 
@@ -619,6 +641,7 @@ func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi
 		Router:          routing.Router,
 		Backends:        backends,
 		Routes:          buildRouteRules(config.Routes),
+		Capabilities:    buildBackendCapabilities(config.Backends),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,

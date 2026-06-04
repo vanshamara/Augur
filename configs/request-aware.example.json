@@ -14,16 +14,19 @@
     {
       "id": "fast",
       "model": "gpt-4.1-nano",
+      "capabilities": ["chat"],
       "max_completion_tokens": 512
     },
     {
       "id": "balanced",
       "model": "gpt-4.1-mini",
+      "capabilities": ["chat", "reasoning", "coding"],
       "max_completion_tokens": 768
     },
     {
       "id": "strong",
       "model": "gpt-4.1",
+      "capabilities": ["reasoning", "coding"],
       "max_completion_tokens": 1024
     }
   ],

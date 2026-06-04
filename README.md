@@ -22,6 +22,7 @@ Built or mostly built:
 - JSON and YAML config
 - static, round-robin, least-loaded, EWMA, cost-aware, P2C, and bandit routers
 - route rules with task, tenant, tier, and candidate backend matching
+- backend capability filtering for chat, reasoning, coding, and embedding
 - health, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - OpenAI-compatible backend adapter
 - streaming responses
@@ -36,8 +37,6 @@ Built or mostly built:
 
 Partial:
 
-- task type affects routing features, but backend capability filtering is not a
-  first-class config field yet
 - canary rollback helpers exist, but deterministic percentage rollout is not a
   first-class route rule yet
 - fallback exists for load shedding and hedging, but route-specific fallback
@@ -178,8 +177,9 @@ model, so it does not add routing cost.
 
 The request-aware example uses quality as a floor and then optimizes latency and
 cost among the feasible backends. This keeps cheaper models in play without
-letting cost override the configured quality target. Request type is currently a
-routing feature, not a complete media or task gateway.
+letting cost override the configured quality target. Request type controls route
+matching and backend capability filtering. It is not a complete media or task
+gateway.
 
 ## Compare Routers
 

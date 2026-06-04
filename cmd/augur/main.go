@@ -69,6 +69,7 @@ func run(ctx context.Context, getenv func(string) string) error {
 		Router:          routing.Router,
 		Backends:        backends,
 		Routes:          buildRouteRules(config.Routes),
+		Capabilities:    buildBackendCapabilities(config.Backends),
 		Filters:         filters,
 		Hedge:           buildHedge(config.DataPlane.Hedge),
 		SingleFlight:    singleFlight,
@@ -323,6 +324,14 @@ func buildRouteRules(routes []appconfig.Route) []dataplane.RouteRule {
 			},
 			Candidates: candidates,
 		})
+	}
+	return out
+}
+
+func buildBackendCapabilities(backends []appconfig.Backend) map[core.BackendID][]core.RequestType {
+	out := make(map[core.BackendID][]core.RequestType, len(backends))
+	for _, backend := range backends {
+		out[backend.ID] = append([]core.RequestType(nil), backend.Capabilities...)
 	}
 	return out
 }

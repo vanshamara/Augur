@@ -54,6 +54,7 @@ openai:
 backends:
   - id: "fast"
     model: "your-model-id"
+    capabilities: ["chat", "reasoning", "coding"]
     input_cost_per_token: 0.0
     output_cost_per_token: 0.0
     max_completion_tokens: 512
@@ -61,6 +62,9 @@ backends:
 
 - `id`: route-facing backend name. Defaults to `model` when omitted.
 - `model`: provider model name. Required.
+- `capabilities`: optional list of supported request types. Supported values are
+  `chat`, `reasoning`, `coding`, and `embedding`. If omitted or empty, the
+  backend is treated as compatible with all current request types.
 - cost fields: USD per token. These override `pricing.models`.
 - `max_completion_tokens`: backend default max output token count.
 
@@ -108,7 +112,8 @@ with no `match` block can be used as the default route.
 
 If `routes` is empty, Augur keeps the older behavior and all configured backends
 are candidates. If routes are configured and none match a request, Augur returns
-no candidates.
+no candidates. Route candidates are also filtered by backend `capabilities`
+before health, circuit, concurrency, and router selection.
 
 ## Router
 
@@ -305,9 +310,8 @@ local classifier sends simple or spam-like prompts toward cheaper chat behavior
 and marks coding or reasoning prompts as higher-need work. Headers and metadata
 override the inferred values.
 
-Request type is currently a routing feature. Backend capability filtering is
-planned V1 work, and Augur does not yet expose first-class image, audio, or video
-request APIs.
+Request type controls route matching and backend capability filtering. Augur does
+not yet expose first-class image, audio, or video request APIs.
 
 The same values can be sent in chat request `metadata`:
 

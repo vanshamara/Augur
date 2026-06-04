@@ -213,6 +213,97 @@ func TestGatewayReturnsNoCandidatesWhenNoRouteMatches(t *testing.T) {
 	}
 }
 
+func TestGatewayFiltersCandidatesByCapability(t *testing.T) {
+	chat := &fakeBackend{id: "chat"}
+	reasoning := &fakeBackend{id: "reasoning"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("reasoning"),
+		Backends: []backend.Backend{chat, reasoning},
+		Routes: []RouteRule{
+			{
+				Name:       "default",
+				Candidates: []core.BackendID{"chat", "reasoning"},
+			},
+		},
+		Capabilities: map[core.BackendID][]core.RequestType{
+			"chat":      []core.RequestType{core.Chat},
+			"reasoning": []core.RequestType{core.Reasoning},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			Type: core.Chat,
+		},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "chat" || reasoning.calls.Load() != 0 {
+		t.Fatalf("capability-filtered response got %+v reasoning calls %d", resp, reasoning.calls.Load())
+	}
+}
+
+func TestGatewayRoutesEmbeddingToCapableBackend(t *testing.T) {
+	chat := &fakeBackend{id: "chat"}
+	embedding := &fakeBackend{id: "embedding"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("chat"),
+		Backends: []backend.Backend{chat, embedding},
+		Capabilities: map[core.BackendID][]core.RequestType{
+			"chat":      []core.RequestType{core.Chat},
+			"embedding": []core.RequestType{core.Embedding},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	resp, err := gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			Type: core.Embedding,
+		},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.Backend != "embedding" || chat.calls.Load() != 0 {
+		t.Fatalf("embedding response got %+v chat calls %d", resp, chat.calls.Load())
+	}
+}
+
+func TestGatewayReturnsCompatibilityErrorWhenNoBackendSupportsTask(t *testing.T) {
+	chat := &fakeBackend{id: "chat"}
+	gateway, err := New(Config{
+		Router:   router.NewStatic("chat"),
+		Backends: []backend.Backend{chat},
+		Capabilities: map[core.BackendID][]core.RequestType{
+			"chat": []core.RequestType{core.Chat},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new gateway: %v", err)
+	}
+
+	_, err = gateway.Call(context.Background(), core.Request{
+		ID: "req",
+		Features: core.Features{
+			Type: core.Embedding,
+		},
+	})
+	if !errors.Is(err, ErrNoCompatibleCandidates) {
+		t.Fatalf("compatibility error got %v", err)
+	}
+	if chat.calls.Load() != 0 {
+		t.Fatalf("incompatible backend was called %d times", chat.calls.Load())
+	}
+}
+
 func TestRouteSelectorMatchesTenantAndTier(t *testing.T) {
 	selector := NewRouteSelector([]RouteRule{
 		{

@@ -54,11 +54,12 @@ type OpenAI struct {
 }
 
 type Backend struct {
-	ID                  core.BackendID `json:"id"`
-	Model               string         `json:"model"`
-	InputCostPerToken   float64        `json:"input_cost_per_token"`
-	OutputCostPerToken  float64        `json:"output_cost_per_token"`
-	MaxCompletionTokens int            `json:"max_completion_tokens"`
+	ID                  core.BackendID     `json:"id"`
+	Model               string             `json:"model"`
+	Capabilities        []core.RequestType `json:"capabilities"`
+	InputCostPerToken   float64            `json:"input_cost_per_token"`
+	OutputCostPerToken  float64            `json:"output_cost_per_token"`
+	MaxCompletionTokens int                `json:"max_completion_tokens"`
 }
 
 type Route struct {
@@ -317,6 +318,9 @@ func (a App) withDefaults() (App, error) {
 		if a.Backends[i].ID == "" {
 			a.Backends[i].ID = core.BackendID(a.Backends[i].Model)
 		}
+		if err := validateBackendCapabilities(a.Backends[i]); err != nil {
+			return App{}, err
+		}
 	}
 	a.applyPricingTable()
 	if err := validateRoutes(a.Routes, a.Backends); err != nil {
@@ -466,11 +470,18 @@ func validateRoutes(routes []Route, backends []Backend) error {
 	return nil
 }
 
+func validateBackendCapabilities(backend Backend) error {
+	for _, capability := range backend.Capabilities {
+		if !supportedRequestType(capability) {
+			return fmt.Errorf("backend %q has unsupported capability %q", backend.ID, capability)
+		}
+	}
+	return nil
+}
+
 func validateRouteMatch(name string, match RouteMatch) error {
 	for _, taskType := range match.TaskTypes {
-		switch taskType {
-		case core.Chat, core.Reasoning, core.Coding, core.Embedding:
-		default:
+		if !supportedRequestType(taskType) {
 			return fmt.Errorf("route %q has unsupported task type %q", name, taskType)
 		}
 	}
@@ -485,6 +496,15 @@ func validateRouteMatch(name string, match RouteMatch) error {
 		}
 	}
 	return nil
+}
+
+func supportedRequestType(value core.RequestType) bool {
+	switch value {
+	case core.Chat, core.Reasoning, core.Coding, core.Embedding:
+		return true
+	default:
+		return false
+	}
 }
 
 func emptyRouteMatch(match RouteMatch) bool {
