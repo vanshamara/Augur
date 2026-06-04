@@ -1003,6 +1003,42 @@ func TestDecisionDebugRequiresAuthWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestMetricsEndpointServesHandler(t *testing.T) {
+	server, err := New(Config{
+		Gateway: &fakeGateway{},
+		MetricsHandler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("augur_requests_total 1\n"))
+		}),
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "augur_requests_total") {
+		t.Fatalf("metrics body got %q", rec.Body.String())
+	}
+}
+
+func TestMetricsEndpointAbsentWithoutHandler(t *testing.T) {
+	server := testServer(t, &fakeGateway{})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 without a metrics handler, got %d", rec.Code)
+	}
+}
+
 func TestBackendDebugRequiresAuthWhenEnabled(t *testing.T) {
 	server := testServerWithAuth(t, &fakeGateway{}, []string{"client-key"})
 	req := httptest.NewRequest(http.MethodGet, "/debug/backends", nil)

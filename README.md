@@ -28,6 +28,7 @@ Built or mostly built:
 - active health checks, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
 - backend debug output for health, circuit state, latency window, and error rate
 - optional route-decision debug log that explains candidate filtering per request
+- Prometheus metrics at `/metrics` with a starter Grafana dashboard and alert rules
 - OpenAI-compatible backend adapter
 - streaming responses
 - optional gateway auth
@@ -42,7 +43,8 @@ Built or mostly built:
 
 Partial:
 
-- operator visibility is JSON debug output only. There is no bundled dashboard.
+- operator visibility is Prometheus metrics plus JSON debug output. A starter
+  Grafana dashboard ships in `dashboards/`, but there is no hosted dashboard.
 
 Not included:
 
@@ -392,8 +394,9 @@ Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
   task type.
 - It only ships an OpenAI-compatible backend adapter. Any provider you use must
   expose that API shape.
-- It has no built-in TLS, no Kubernetes manifests, and no bundled dashboard. Put
-  it behind your own proxy and monitoring.
+- It has no built-in TLS and no Kubernetes manifests. It serves Prometheus
+  metrics and ships a starter Grafana dashboard, but no hosted dashboard. Put it
+  behind your own proxy and monitoring.
 - The decision log lives in memory per process. In a multi-replica deployment a
   request id only resolves on the replica that served it.
 - Learned routing is optional and has not been tuned against your workload. Start

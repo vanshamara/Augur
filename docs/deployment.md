@@ -157,9 +157,17 @@ responses, or API keys.
 
 - `GET /healthz`: process is alive
 - `GET /readyz`: gateway is ready
+- `GET /metrics`: Prometheus metrics for request rate, errors, latency, and cost
 - `GET /debug/backends`: backend health, circuit, latency, and error window state
 - `GET /debug/decisions`: recent routing decisions, or one record with
   `?request_id=...`
+
+Augur serves Prometheus metrics at `/metrics` out of the box, with no extra
+exporter setup. Point a Prometheus scrape at it. A starter Grafana dashboard and
+example alert rules live in the `dashboards/` folder. Metrics use low-cardinality
+labels only, so the request id is not a label. `/metrics` is public like the
+health endpoints, so keep it on an internal network or behind your own proxy if
+the gateway is public.
 
 Use `/readyz` for load balancer readiness checks.
 Use `/debug/backends` and `/debug/decisions` for operator checks. They follow

@@ -89,6 +89,11 @@ if ! curl -fsS "http://$ADDR/readyz" >/dev/null; then
   cat "$TMP_DIR/augur.log"
   exit 1
 fi
+if ! curl -fsS "http://$ADDR/metrics" >/dev/null; then
+  echo "metrics endpoint did not respond" >&2
+  cat "$TMP_DIR/augur.log"
+  exit 1
+fi
 
 if [[ "$CHAT" == "1" ]]; then
   CHAT_RESPONSE="$TMP_DIR/chat-response.json"

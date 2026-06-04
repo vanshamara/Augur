@@ -23,6 +23,7 @@ import (
 	"github.com/vanshamara/Augur/internal/dataplane"
 	"github.com/vanshamara/Augur/internal/httpapi"
 	"github.com/vanshamara/Augur/internal/live"
+	"github.com/vanshamara/Augur/internal/observability"
 	"github.com/vanshamara/Augur/internal/openaiapi"
 	"github.com/vanshamara/Augur/internal/persist"
 	"github.com/vanshamara/Augur/internal/quality"
@@ -152,6 +153,10 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 	}
 	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
 	decisions := buildDecisionLog(config.DataPlane.DecisionLog)
+	observer, metricsHandler, err := observability.NewPrometheus("augur")
+	if err != nil {
+		return err
+	}
 
 	gateway, err := dataplane.New(dataplane.Config{
 		Router:          routing.Router,
@@ -162,6 +167,7 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 		Pricing:         buildBackendPricing(config.Backends),
 		RequirePricing:  config.Budgets.RequirePricing,
 		Decisions:       decisions,
+		Observer:        observer,
 		BackendTimeouts: buildBackendTimeouts(config.Backends),
 		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,
 		Filters:         filters,
@@ -195,9 +201,10 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 		Ready: func(ctx context.Context) bool {
 			return gateway.Ready()
 		},
-		BackendStatus: gateway.BackendStatus,
-		Decisions:     gateway.DecisionRecords,
-		Decision:      gateway.DecisionRecord,
+		BackendStatus:  gateway.BackendStatus,
+		Decisions:      gateway.DecisionRecords,
+		Decision:       gateway.DecisionRecord,
+		MetricsHandler: metricsHandler,
 	})
 	if err != nil {
 		return err

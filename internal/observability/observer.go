@@ -111,15 +111,15 @@ func (o *Observer) RecordRoute(ctx context.Context, policyID string, strategy st
 	if o == nil {
 		return
 	}
-	attrs := []attribute.KeyValue{
+	metricAttrs := []attribute.KeyValue{
 		attribute.String("policy.id", policyID),
 		attribute.String("router.strategy", strategy),
-		attribute.String("request.id", requestID),
 		attribute.String("backend.id", string(backend)),
 		attribute.Int("candidate.count", candidates),
 	}
-	o.routes.Add(ctx, 1, metric.WithAttributes(attrs...))
-	trace.SpanFromContext(ctx).AddEvent("route.selected", trace.WithAttributes(attrs...))
+	o.routes.Add(ctx, 1, metric.WithAttributes(metricAttrs...))
+	eventAttrs := append(metricAttrs, attribute.String("request.id", requestID))
+	trace.SpanFromContext(ctx).AddEvent("route.selected", trace.WithAttributes(eventAttrs...))
 }
 
 func (o *Observer) RecordResponse(ctx context.Context, resp core.Response, err error) {
@@ -151,30 +151,31 @@ func (o *Observer) RecordReward(ctx context.Context, requestID string, backend c
 	if o == nil {
 		return
 	}
-	attrs := []attribute.KeyValue{
+	o.rewardValue.Record(ctx, reward, metric.WithAttributes(attribute.String("backend.id", string(backend))))
+	trace.SpanFromContext(ctx).AddEvent("bandit.reward_update", trace.WithAttributes(
 		attribute.String("request.id", requestID),
 		attribute.String("backend.id", string(backend)),
-	}
-	o.rewardValue.Record(ctx, reward, metric.WithAttributes(attrs...))
-	trace.SpanFromContext(ctx).AddEvent("bandit.reward_update", trace.WithAttributes(append(attrs, attribute.Float64("reward", reward))...))
+		attribute.Float64("reward", reward),
+	))
 }
 
 func (o *Observer) RecordQuality(ctx context.Context, requestID string, backend core.BackendID, score float64) {
 	if o == nil {
 		return
 	}
-	attrs := []attribute.KeyValue{
+	o.qualityScore.Record(ctx, score, metric.WithAttributes(attribute.String("backend.id", string(backend))))
+	trace.SpanFromContext(ctx).AddEvent("quality.score", trace.WithAttributes(
 		attribute.String("request.id", requestID),
 		attribute.String("backend.id", string(backend)),
 		attribute.Float64("quality.score", score),
-	}
-	o.qualityScore.Record(ctx, score, metric.WithAttributes(attrs...))
-	trace.SpanFromContext(ctx).AddEvent("quality.score", trace.WithAttributes(attrs...))
+	))
 }
 
+// responseAttrs returns low-cardinality labels for response metrics. It leaves
+// out the request id on purpose, since per-request labels would create one time
+// series per request. The request id stays on trace spans instead.
 func responseAttrs(resp core.Response) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String("request.id", resp.RequestID),
 		attribute.String("route.name", resp.RouteName),
 		attribute.String("backend.id", string(resp.Backend)),
 		attribute.String("canary.mode", resp.CanaryMode),

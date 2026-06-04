@@ -36,6 +36,7 @@ type Config struct {
 	BackendStatus  func() []dataplane.BackendStatus
 	Decisions      func() []dataplane.RouteDecisionRecord
 	Decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
+	MetricsHandler http.Handler
 	AuthKeys       []string
 	Defaults       RequestDefaults
 	TenantHeader   string
@@ -69,6 +70,7 @@ type Server struct {
 	backendStatus  func() []dataplane.BackendStatus
 	decisions      func() []dataplane.RouteDecisionRecord
 	decision       func(requestID string) (dataplane.RouteDecisionRecord, bool)
+	metricsHandler http.Handler
 	authKeys       []string
 	defaults       RequestDefaults
 	tenantHeader   string
@@ -114,6 +116,7 @@ func New(config Config) (*Server, error) {
 		backendStatus:  config.BackendStatus,
 		decisions:      config.Decisions,
 		decision:       config.Decision,
+		metricsHandler: config.MetricsHandler,
 		authKeys:       cleanAuthKeys(config.AuthKeys),
 		defaults:       config.Defaults,
 		tenantHeader:   config.TenantHeader,
@@ -127,6 +130,9 @@ func New(config Config) (*Server, error) {
 	mux.HandleFunc("/debug/backends", server.handleAuthenticatedBackendDebug)
 	mux.HandleFunc("/debug/decisions", server.handleAuthenticatedDecisionDebug)
 	mux.HandleFunc("/v1/chat/completions", server.handleAuthenticatedChatCompletions)
+	if server.metricsHandler != nil {
+		mux.Handle("/metrics", server.metricsHandler)
+	}
 	server.mux = mux
 	return server, nil
 }

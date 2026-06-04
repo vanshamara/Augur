@@ -226,6 +226,21 @@ eligible again after `success_threshold` consecutive successes.
 error rate, and timeout details for each backend. It uses the same auth settings
 as `/v1/chat/completions`.
 
+## Metrics
+
+`GET /metrics` serves Prometheus metrics with no extra exporter setup. It is
+public like the health endpoints, so restrict it at the network layer if the
+gateway is public. The metrics are:
+
+- `augur_requests_total`, `augur_errors_total`: request and error counts.
+- `augur_routes_total`: routing picks, labeled by router strategy and backend.
+- `augur_cost_usd_total`: realized cost in USD.
+- `augur_latency_ms`: latency histogram.
+
+Labels are low cardinality, such as backend and route. The request id is not a
+metric label; it stays on trace spans. A starter Grafana dashboard and example
+alert rules are in the `dashboards/` folder.
+
 ## Decision Log
 
 ```yaml
