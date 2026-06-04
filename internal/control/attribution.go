@@ -32,6 +32,7 @@ type AttributionLog struct {
 	mu        sync.Mutex
 	size      int
 	ids       []string
+	slots     map[string]int
 	next      int
 	decisions map[string]DecisionRecord
 	responses map[string]ResponseRecord
@@ -48,6 +49,7 @@ func NewAttributionLogWithSize(size int) *AttributionLog {
 	return &AttributionLog{
 		size:      size,
 		ids:       make([]string, size),
+		slots:     map[string]int{},
 		decisions: map[string]DecisionRecord{},
 		responses: map[string]ResponseRecord{},
 	}
@@ -95,18 +97,18 @@ func (a *AttributionLog) remember(requestID string) bool {
 	if requestID == "" {
 		return false
 	}
-	if _, ok := a.decisions[requestID]; ok {
-		return true
-	}
-	if _, ok := a.responses[requestID]; ok {
-		return true
+	if slot, ok := a.slots[requestID]; ok {
+		a.ids[slot] = ""
+		delete(a.slots, requestID)
 	}
 
 	if old := a.ids[a.next]; old != "" {
 		delete(a.decisions, old)
 		delete(a.responses, old)
+		delete(a.slots, old)
 	}
 	a.ids[a.next] = requestID
+	a.slots[requestID] = a.next
 	a.next = (a.next + 1) % a.size
 	return true
 }
