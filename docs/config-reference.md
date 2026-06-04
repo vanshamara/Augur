@@ -247,7 +247,16 @@ learning:
     seed: 11
 ```
 
-Live learning requires `router.type: "bandit"`.
+Learning is an optional advanced mode. The gateway runs fine without it. Health,
+latency, cost, task type, canary, and fallback all work with any router, so you
+can leave `learning.enabled` off and pick a simple router like `round_robin` or
+`cost_aware`.
+
+Live learning requires `router.type: "bandit"`. The bandit only ranks the
+candidates the route rules and filters already allow. It cannot pick a backend
+that capability, health, circuit, concurrency, tenant, budget, or canary rules
+have removed. Learning improves the choice inside the eligible set. It never
+overrides a hard constraint.
 
 Persistence saves learned reward and quality state. It does not save prompts,
 responses, or API keys.

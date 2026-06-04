@@ -171,6 +171,12 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 The bandit uses these hints, token estimates, and real outcomes to learn which
 backend fits each request shape.
 
+Learning is an optional advanced mode. Routing works without it. Health, latency,
+cost, task type, canary, and fallback all run with any router, so you can keep
+the bandit off and use a simple router. When the bandit is on, it only ranks the
+backends that route rules and filters already allow. It cannot pick a backend
+that a health, capability, budget, or canary rule has removed.
+
 Routes can also define a canary backend with a deterministic percentage. Canary
 responses include `X-Augur-Canary` and `X-Augur-Canary-Backend`. Shadow canaries
 call the candidate backend without returning its response.

@@ -75,6 +75,16 @@ file. It does not store prompts, responses, or API keys.
 
 ## Learning State
 
+Learning is an optional advanced mode. It is not required for routing. The basic
+product works with any router, and `internal/live` only wraps the gateway to
+observe outcomes after the fact. It does not change how requests are filtered or
+routed.
+
+The bandit is a router like any other. The gateway hands it the candidate set
+that route rules and filters already produced, so the bandit only ranks backends
+that are already eligible. It cannot bring back a backend that capability,
+health, circuit, concurrency, tenant, budget, or canary rules removed.
+
 The bandit keeps two learned models:
 
 - reward state, used to pick a backend
