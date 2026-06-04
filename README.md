@@ -149,7 +149,8 @@ The response includes `X-Augur-Backend`, which shows the final backend Augur
 used. When a route fallback runs, Augur also returns `X-Augur-Fallback-Count`
 and `X-Augur-Attempted-Backends`. When backend prices are configured, Augur adds
 `X-Augur-Estimated-Cost-USD` and `X-Augur-Cost-USD` so you can see the estimated
-and realized cost of the call.
+and realized cost of the call. Streaming responses include the estimate up
+front; realized streaming cost is known only after the stream ends.
 
 Send request-aware hints when the caller knows the workload:
 
