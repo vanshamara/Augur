@@ -75,8 +75,52 @@ func runValidate(args []string, getenv func(string) string, stdout io.Writer) er
 	if err != nil {
 		return err
 	}
+	if err := preflight(config); err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "config valid: %s (%d backends, %d routes)\n", path, len(config.Backends), len(config.Routes))
 	return nil
+}
+
+// preflight builds the gateway from config with dry backends so validate can
+// catch wiring mistakes without starting the server or calling a provider.
+func preflight(config appconfig.App) error {
+	ids := backendIDs(config.Backends)
+	routing, err := buildRouter(config, ids)
+	if err != nil {
+		return err
+	}
+	defer closeGateway(routing.Router)
+
+	filters, err := buildFilters(config, ids)
+	if err != nil {
+		return err
+	}
+	if err := learningRouterRequired(config.Learning, routing.Bandit); err != nil {
+		return err
+	}
+	if err := healthFilterRequired(config.DataPlane.HealthCheck, filters); err != nil {
+		return err
+	}
+
+	singleFlight, singleFlightKey := buildSingleFlight(config.DataPlane.SingleFlight)
+	_, err = dataplane.New(dataplane.Config{
+		Router:          routing.Router,
+		Backends:        buildDryBackends(ids),
+		Routes:          buildRouteRules(config.Routes),
+		Capabilities:    buildBackendCapabilities(config.Backends),
+		Canary:          buildCanaryConfig(config.Canary),
+		Pricing:         buildBackendPricing(config.Backends),
+		RequirePricing:  config.Budgets.RequirePricing,
+		Decisions:       buildDecisionLog(config.DataPlane.DecisionLog),
+		BackendTimeouts: buildBackendTimeouts(config.Backends),
+		ActiveHealth:    config.DataPlane.HealthCheck.Enabled,
+		Filters:         filters,
+		Hedge:           buildHedge(config.DataPlane.Hedge),
+		SingleFlight:    singleFlight,
+		SingleFlightKey: singleFlightKey,
+	})
+	return err
 }
 
 func runServer(ctx context.Context, getenv func(string) string) error {
@@ -439,14 +483,23 @@ func buildBackendTimeouts(backends []appconfig.Backend) map[core.BackendID]time.
 	return out
 }
 
+// healthFilterRequired reports the wiring mistake of enabling active health
+// checks without the health filter that those checks drive.
+func healthFilterRequired(config appconfig.HealthCheck, filters []dataplane.Filter) error {
+	if config.Enabled && findHealthFilter(filters) == nil {
+		return errors.New("data_plane health_check requires the health filter")
+	}
+	return nil
+}
+
 func startActiveHealthChecks(ctx context.Context, config appconfig.HealthCheck, filters []dataplane.Filter, backends []backend.Backend) (func(), error) {
 	if !config.Enabled {
 		return func() {}, nil
 	}
-	health := findHealthFilter(filters)
-	if health == nil {
-		return nil, errors.New("data_plane health_check requires the health filter")
+	if err := healthFilterRequired(config, filters); err != nil {
+		return nil, err
 	}
+	health := findHealthFilter(filters)
 	active := dataplane.NewActiveHealth(dataplane.ActiveHealthConfig{
 		Interval:         config.Interval.Duration,
 		Timeout:          config.Timeout.Duration,
@@ -564,12 +617,21 @@ func tenantLimitConfig(config appconfig.Tenants) dataplane.TenantLimitConfig {
 	}
 }
 
+// learningRouterRequired reports the wiring mistake of enabling live learning
+// without the bandit router that the learner updates.
+func learningRouterRequired(config appconfig.Learning, bandit *control.BanditRouter) error {
+	if config.Enabled && bandit == nil {
+		return errors.New("live learning requires router.type to be bandit")
+	}
+	return nil
+}
+
 func buildLiveGateway(config appconfig.App, gateway live.Gateway, bandit *control.BanditRouter, client *openaiapi.Client) (live.Gateway, error) {
+	if err := learningRouterRequired(config.Learning, bandit); err != nil {
+		return nil, err
+	}
 	if !config.Learning.Enabled {
 		return gateway, nil
-	}
-	if bandit == nil {
-		return nil, errors.New("live learning requires router.type to be bandit")
 	}
 
 	var scorer quality.Scorer

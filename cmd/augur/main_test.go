@@ -143,6 +143,55 @@ func TestRunValidateUsesEnvConfig(t *testing.T) {
 	}
 }
 
+func TestRunValidateRejectsLearningWithoutBandit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.json")
+	body := `{"backends":[{"id":"a","model":"model-a"}],"router":{"type":"round_robin"},"learning":{"enabled":true}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := runValidate([]string{"--config", path}, func(string) string {
+		return ""
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "router.type to be bandit") {
+		t.Fatalf("expected a learning-without-bandit error, got %v", err)
+	}
+}
+
+func TestRunValidateRejectsHealthCheckWithoutHealthFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.json")
+	body := `{"backends":[{"id":"a","model":"model-a"}],"data_plane":{"filters":["circuit"],"health_check":{"enabled":true,"interval":"5s","timeout":"2s"}}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	err := runValidate([]string{"--config", path}, func(string) string {
+		return ""
+	}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "requires the health filter") {
+		t.Fatalf("expected a health-filter error, got %v", err)
+	}
+}
+
+func TestRunValidateAcceptsLearningWithBandit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.json")
+	body := `{"backends":[{"id":"a","model":"model-a"}],"router":{"type":"bandit"},"learning":{"enabled":true}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout bytes.Buffer
+
+	err := runValidate([]string{"--config", path}, func(string) string {
+		return ""
+	}, &stdout)
+	if err != nil {
+		t.Fatalf("validate learning with bandit: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "config valid:") {
+		t.Fatalf("validate output got %q", stdout.String())
+	}
+}
+
 func TestRunValidateRequiresConfig(t *testing.T) {
 	err := runValidate(nil, func(string) string {
 		return ""
