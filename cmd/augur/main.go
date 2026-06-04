@@ -43,6 +43,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout 
 		switch args[0] {
 		case "validate":
 			return runValidate(args[1:], getenv, stdout)
+		case "explain", "simulate":
+			return runExplain(ctx, args[1:], getenv, stdout)
 		default:
 			return fmt.Errorf("unknown command %q", args[0])
 		}

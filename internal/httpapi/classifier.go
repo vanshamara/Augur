@@ -16,6 +16,29 @@ const (
 	codingCostBudgetUSD      = 0.03
 )
 
+// InferRequestType returns the local classifier result without calling a model.
+func InferRequestType(prompt string, tokens int) core.RequestType {
+	return inferRequestType(prompt, tokens)
+}
+
+// InferRequestDefaults returns the routing defaults inferred from prompt shape.
+func InferRequestDefaults(prompt string, requestType core.RequestType, promptTokens int) RequestDefaults {
+	if requestType == "" {
+		requestType = inferRequestType(prompt, promptTokens)
+	}
+	switch requestType {
+	case core.Reasoning:
+		return RequestDefaults{LatencyBudgetMs: reasoningLatencyBudgetMs, CostBudgetUSD: reasoningCostBudgetUSD}
+	case core.Coding:
+		return RequestDefaults{LatencyBudgetMs: codingLatencyBudgetMs, CostBudgetUSD: codingCostBudgetUSD}
+	default:
+		if simpleOrSpamPrompt(prompt, promptTokens) {
+			return RequestDefaults{LatencyBudgetMs: simpleLatencyBudgetMs, CostBudgetUSD: simpleCostBudgetUSD}
+		}
+		return RequestDefaults{}
+	}
+}
+
 func inferRequestOptions(body chatCompletionRequest, explicitType core.RequestType, promptTokens int) requestOptions {
 	prompt := body.promptText()
 	tokens := promptTokens

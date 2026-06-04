@@ -578,6 +578,11 @@ func flattenMessages(messages []core.Message) string {
 	return strings.Join(lines, "\n")
 }
 
+// EstimateTokens returns the local token estimate used before routing.
+func EstimateTokens(text string) int {
+	return estimateTokens(text)
+}
+
 func estimateTokens(text string) int {
 	if text == "" {
 		return 0

@@ -138,6 +138,20 @@ Check a config before starting the gateway:
 go run ./cmd/augur validate --config configs/request-aware.example.yaml
 ```
 
+Explain a request before sending traffic to a provider:
+
+```bash
+go run ./cmd/augur explain \
+  --config configs/request-aware.example.yaml \
+  --prompt "Say hello in one short sentence." \
+  --type chat
+```
+
+`explain` prints the matched route, candidates, exclusions, canary choice,
+fallback plan, cost estimate, and selected backend as JSON. It uses dry-run
+backends and does not call a provider. `simulate` is an alias for the same
+command.
+
 Send a request:
 
 ```bash

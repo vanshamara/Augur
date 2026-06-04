@@ -90,6 +90,15 @@ Validate the config before starting Augur:
 bin/augur validate --config /etc/augur/config.json
 ```
 
+Explain a request before sending real traffic:
+
+```bash
+bin/augur explain --config /etc/augur/config.json --prompt "Say hello." --type chat
+```
+
+This uses dry-run backends. It does not need a provider API key and does not
+call a provider.
+
 Example configs live in `configs/`. Copy one outside the repo and replace model
 IDs with real provider model names.
 

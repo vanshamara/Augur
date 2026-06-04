@@ -82,3 +82,15 @@ func TestInferRequestOptionsUsesPromptTokenHint(t *testing.T) {
 		t.Fatalf("request type got %q", options.RequestType)
 	}
 }
+
+func TestInferRequestDefaultsMatchesRequestShape(t *testing.T) {
+	reasoning := InferRequestDefaults("Solve this carefully.", "", 10)
+	if reasoning.LatencyBudgetMs != reasoningLatencyBudgetMs || reasoning.CostBudgetUSD != reasoningCostBudgetUSD {
+		t.Fatalf("reasoning defaults got %+v", reasoning)
+	}
+
+	simple := InferRequestDefaults("hi", core.Chat, 1)
+	if simple.LatencyBudgetMs != simpleLatencyBudgetMs || simple.CostBudgetUSD != simpleCostBudgetUSD {
+		t.Fatalf("simple defaults got %+v", simple)
+	}
+}

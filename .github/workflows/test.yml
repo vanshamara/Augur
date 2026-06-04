@@ -8,8 +8,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -17,4 +17,6 @@ jobs:
       - run: go test ./...
       - run: go test -race ./...
       - run: go run ./cmd/demo
+      - run: go run ./cmd/augur validate --config configs/request-aware.example.yaml
+      - run: go run ./cmd/augur explain --config configs/request-aware.example.yaml --prompt "Say hello." --type chat
       - run: bash -n scripts/smoke-test.sh scripts/routing-smoke-test.sh scripts/demo.sh scripts/live-learning-test.sh

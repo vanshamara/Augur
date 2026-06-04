@@ -10,6 +10,16 @@ Check a config before starting the gateway:
 augur validate --config configs/request-aware.example.yaml
 ```
 
+Explain a request without calling a provider:
+
+```bash
+augur explain --config configs/request-aware.example.yaml --prompt "Say hello." --type chat
+```
+
+`explain` returns JSON with the route, candidates, exclusions, canary decision,
+fallback plan, estimated cost, selected backend, and `reason_summary`.
+`simulate` is an alias for the same command.
+
 ## Top Level
 
 ```yaml
