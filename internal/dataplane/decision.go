@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/vanshamara/Augur/internal/core"
@@ -22,6 +24,7 @@ type RouteDecisionRecord struct {
 	CostBudgetUSD     float64           `json:"cost_budget_usd,omitempty"`
 	Candidates        []core.BackendID  `json:"candidates"`
 	Excluded          []ExclusionRecord `json:"excluded,omitempty"`
+	ReasonSummary     string            `json:"reason_summary,omitempty"`
 	Canary            CanaryRecord      `json:"canary"`
 	Selected          core.BackendID    `json:"selected,omitempty"`
 	AttemptedBackends []core.BackendID  `json:"attempted_backends,omitempty"`
@@ -83,6 +86,7 @@ func (r *RouteDecisionRecord) finish(resp core.Response, err error) {
 			r.FallbackCount = metadata.FallbackCount()
 		}
 	}
+	r.ReasonSummary = r.reasonSummary()
 }
 
 // DecisionLog keeps the most recent decision records in a fixed size ring so an
@@ -177,6 +181,75 @@ func (r RouteDecisionRecord) clone() RouteDecisionRecord {
 	r.Excluded = append([]ExclusionRecord(nil), r.Excluded...)
 	r.AttemptedBackends = append([]core.BackendID(nil), r.AttemptedBackends...)
 	return r
+}
+
+func (r RouteDecisionRecord) reasonSummary() string {
+	parts := []string{}
+	if r.Selected != "" {
+		parts = append(parts, selectedSummary(r.Selected, r.AttemptedBackends, r.FallbackCount))
+	} else if r.Error != "" {
+		parts = append(parts, "No backend selected")
+	}
+	if len(r.Excluded) > 0 {
+		parts = append(parts, "excluded "+exclusionSummary(r.Excluded))
+	}
+	if r.Canary.RollbackReason != "" {
+		parts = append(parts, fmt.Sprintf("canary %s skipped because %s", r.Canary.Backend, humanizeReason(r.Canary.RollbackReason)))
+	}
+	if r.Error != "" {
+		parts = append(parts, "error: "+r.Error)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ") + "."
+}
+
+func selectedSummary(selected core.BackendID, attempts []core.BackendID, fallbackCount int) string {
+	if fallbackCount <= 0 || len(attempts) == 0 {
+		return fmt.Sprintf("Selected %s", selected)
+	}
+	return fmt.Sprintf("Selected %s after attempts %s", selected, humanJoinBackends(attempts))
+}
+
+func exclusionSummary(exclusions []ExclusionRecord) string {
+	limit := len(exclusions)
+	if limit > 3 {
+		limit = 3
+	}
+	parts := make([]string, 0, limit+1)
+	for _, exclusion := range exclusions[:limit] {
+		parts = append(parts, fmt.Sprintf("%s at %s because %s", exclusion.Backend, exclusion.Stage, exclusion.Reason))
+	}
+	if remaining := len(exclusions) - limit; remaining > 0 {
+		parts = append(parts, fmt.Sprintf("%d more", remaining))
+	}
+	return humanJoin(parts)
+}
+
+func humanJoinBackends(values []core.BackendID) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, string(value))
+	}
+	return humanJoin(parts)
+}
+
+func humanJoin(values []string) string {
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " and " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", and " + values[len(values)-1]
+	}
+}
+
+func humanizeReason(value string) string {
+	return strings.ReplaceAll(value, "_", " ")
 }
 
 // dropped returns the backends that were in before but not in after. Filters

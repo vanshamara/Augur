@@ -132,6 +132,12 @@ export AUGUR_CONFIG="configs/request-aware.example.yaml"
 go run ./cmd/augur
 ```
 
+Check a config before starting the gateway:
+
+```bash
+go run ./cmd/augur validate --config configs/request-aware.example.yaml
+```
+
 Send a request:
 
 ```bash
@@ -300,6 +306,43 @@ Reading the example:
 
 See `configs/cost-aware.example.yaml` for a budget-focused config and
 `configs/request-aware.example.yaml` for a learned-routing config.
+
+## Explain A Routing Decision
+
+Turn on the decision log:
+
+```yaml
+data_plane:
+  decision_log:
+    enabled: true
+    size: 256
+```
+
+Then ask for one request by id:
+
+```bash
+curl "http://127.0.0.1:8080/debug/decisions?request_id=req-123" \
+  -H "Authorization: Bearer $AUGUR_CLIENT_KEY"
+```
+
+Example fields:
+
+```json
+{
+  "request_id": "req-123",
+  "route_name": "default",
+  "candidates": ["cheap", "strong"],
+  "excluded": [
+    {
+      "backend": "strong",
+      "stage": "budget",
+      "reason": "estimated cost over budget"
+    }
+  ],
+  "reason_summary": "Selected cheap; excluded strong at budget because estimated cost over budget.",
+  "selected": "cheap"
+}
+```
 
 ## Config
 

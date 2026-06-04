@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -100,6 +101,63 @@ func TestReadConfigLoadsFile(t *testing.T) {
 	}
 	if config.Server.Addr != "127.0.0.1:9090" {
 		t.Fatalf("addr got %q", config.Server.Addr)
+	}
+}
+
+func TestRunValidateLoadsConfigFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.yaml")
+	if err := os.WriteFile(path, []byte("backends:\n  - id: a\n    model: model-a\nroutes:\n  - name: default\n    candidates:\n      - backend: a\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout bytes.Buffer
+
+	err := runValidate([]string{"--config", path}, func(string) string {
+		return ""
+	}, &stdout)
+	if err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "config valid:") || !strings.Contains(stdout.String(), "1 backends, 1 routes") {
+		t.Fatalf("validate output got %q", stdout.String())
+	}
+}
+
+func TestRunValidateUsesEnvConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "augur.json")
+	if err := os.WriteFile(path, []byte(`{"backends":[{"id":"a","model":"model-a"}]}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	var stdout bytes.Buffer
+
+	err := runValidate(nil, func(key string) string {
+		if key == "AUGUR_CONFIG" {
+			return path
+		}
+		return ""
+	}, &stdout)
+	if err != nil {
+		t.Fatalf("validate config: %v", err)
+	}
+	if !strings.Contains(stdout.String(), path) {
+		t.Fatalf("validate output got %q", stdout.String())
+	}
+}
+
+func TestRunValidateRequiresConfig(t *testing.T) {
+	err := runValidate(nil, func(string) string {
+		return ""
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("validate without config should fail")
+	}
+}
+
+func TestRunRejectsUnknownCommand(t *testing.T) {
+	err := run(context.Background(), []string{"unknown"}, func(string) string {
+		return ""
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("unknown command should fail")
 	}
 }
 

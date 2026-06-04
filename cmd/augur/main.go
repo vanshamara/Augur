@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -31,12 +33,51 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := run(ctx, os.Getenv); err != nil {
+	if err := run(ctx, os.Args[1:], os.Getenv, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context, getenv func(string) string) error {
+func run(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "validate":
+			return runValidate(args[1:], getenv, stdout)
+		default:
+			return fmt.Errorf("unknown command %q", args[0])
+		}
+	}
+	return runServer(ctx, getenv)
+}
+
+func runValidate(args []string, getenv func(string) string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("validate", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	configPath := flags.String("config", "", "config file path")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected validate argument %q", flags.Arg(0))
+	}
+
+	path := strings.TrimSpace(*configPath)
+	if path == "" {
+		path = strings.TrimSpace(getenv("AUGUR_CONFIG"))
+	}
+	if path == "" {
+		return errors.New("validate requires --config or AUGUR_CONFIG")
+	}
+
+	config, err := appconfig.LoadFile(path)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "config valid: %s (%d backends, %d routes)\n", path, len(config.Backends), len(config.Routes))
+	return nil
+}
+
+func runServer(ctx context.Context, getenv func(string) string) error {
 	config, err := readConfig(getenv)
 	if err != nil {
 		return err

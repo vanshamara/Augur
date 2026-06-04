@@ -84,6 +84,12 @@ export OPENAI_API_KEY="..."
 bin/augur
 ```
 
+Validate the config before starting Augur:
+
+```bash
+bin/augur validate --config /etc/augur/config.json
+```
+
 Example configs live in `configs/`. Copy one outside the repo and replace model
 IDs with real provider model names.
 
@@ -153,7 +159,9 @@ traffic without setting `AUGUR_GATEWAY_API_KEYS`.
 
 The decision log is off by default. Turn it on with `data_plane.decision_log`.
 It keeps the most recent decisions in memory only, and records token counts and
-a hashed canary sticky key, never prompt text or API keys.
+a hashed canary sticky key, never prompt text or API keys. Each record includes
+`reason_summary`, which gives a short explanation of the selected backend,
+excluded backends, fallback attempts, canary rollback, or final error.
 
 ## Auth
 

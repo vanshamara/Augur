@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/vanshamara/Augur/internal/backend"
@@ -57,6 +58,10 @@ func TestDecisionLogRecordsSelectedBackend(t *testing.T) {
 	}
 	if !hasExclusion(record, "chat", "capability") {
 		t.Fatalf("expected chat excluded at capability stage, got %+v", record.Excluded)
+	}
+	if !strings.Contains(record.ReasonSummary, "Selected reasoning") ||
+		!strings.Contains(record.ReasonSummary, "excluded chat at capability because does not support reasoning") {
+		t.Fatalf("reason summary got %q", record.ReasonSummary)
 	}
 }
 
@@ -139,6 +144,11 @@ func TestDecisionLogRecordsBudgetExclusionAndError(t *testing.T) {
 	if record.Selected != "" {
 		t.Fatalf("no backend should be selected, got %q", record.Selected)
 	}
+	if !strings.Contains(record.ReasonSummary, "No backend selected") ||
+		!strings.Contains(record.ReasonSummary, "excluded expensive at budget because estimated cost over budget") ||
+		!strings.Contains(record.ReasonSummary, "error:") {
+		t.Fatalf("reason summary got %q", record.ReasonSummary)
+	}
 }
 
 func TestDecisionLogRecordsFallbackAttempts(t *testing.T) {
@@ -182,6 +192,9 @@ func TestDecisionLogRecordsFallbackAttempts(t *testing.T) {
 	}
 	if len(record.AttemptedBackends) != 2 || record.AttemptedBackends[0] != "primary" || record.AttemptedBackends[1] != "backup" {
 		t.Fatalf("attempted backends got %v", record.AttemptedBackends)
+	}
+	if record.ReasonSummary != "Selected backup after attempts primary and backup." {
+		t.Fatalf("reason summary got %q", record.ReasonSummary)
 	}
 }
 

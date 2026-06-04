@@ -7,6 +7,7 @@ Use this before making the repo public or cutting a release.
 - [ ] Run `go test ./...`.
 - [ ] Run `go vet ./...`.
 - [ ] Run `go run ./cmd/demo` and confirm all six product promises hold.
+- [ ] Run `go run ./cmd/augur validate --config configs/request-aware.example.yaml`.
 - [ ] Run `go test -race ./...`.
 - [ ] Run `bash -n scripts/smoke-test.sh`.
 - [ ] Run `scripts/smoke-test.sh`.

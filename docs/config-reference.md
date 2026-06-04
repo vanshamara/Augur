@@ -4,6 +4,12 @@ Augur accepts JSON and YAML config files through `AUGUR_CONFIG`.
 
 Unknown fields are rejected. Keep real config files outside the repo.
 
+Check a config before starting the gateway:
+
+```bash
+augur validate --config configs/request-aware.example.yaml
+```
+
 ## Top Level
 
 ```yaml
@@ -223,12 +229,33 @@ When enabled, Augur keeps the most recent routing decisions in memory. Each
 record holds the route name, the candidate set, the reason each backend was
 dropped, the canary assignment, and the backend Augur chose. It records prompt
 token counts, fallback attempts, and a hashed canary sticky key, never prompt
-text or API keys.
+text or API keys. Each record also includes `reason_summary`, a short operator
+summary of the selected backend, exclusions, fallback attempts, canary rollback,
+or final error.
 
 `GET /debug/decisions` returns the recent records. `GET
 /debug/decisions?request_id=ID` returns one record so you can explain why a
 specific request went where it did. Both follow the same auth settings as
 `/v1/chat/completions`. The default `size` is 256 when the log is enabled.
+
+Example:
+
+```json
+{
+  "request_id": "req-123",
+  "route_name": "default",
+  "candidates": ["cheap", "strong"],
+  "excluded": [
+    {
+      "backend": "strong",
+      "stage": "budget",
+      "reason": "estimated cost over budget"
+    }
+  ],
+  "reason_summary": "Selected cheap; excluded strong at budget because estimated cost over budget.",
+  "selected": "cheap"
+}
+```
 
 ## Learning
 
