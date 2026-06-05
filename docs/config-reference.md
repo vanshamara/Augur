@@ -463,13 +463,19 @@ rate_limit:
   enabled: true
   requests_per_second: 20
   burst: 40
+  tenants:
+    premium:
+      requests_per_second: 100
+      burst: 200
 ```
 
 When enabled, Augur applies a token-bucket request limit to
-`/v1/chat/completions`. With gateway auth on, each client key gets its own
-bucket. With auth off, all traffic shares one bucket. `burst` defaults to the
-per-second rate when unset. Over-limit requests get HTTP 429 with `Retry-After`.
-The limit is per process.
+`/v1/chat/completions`, keyed by the tenant from the `X-Augur-Tenant` header.
+`requests_per_second` and `burst` are the default for every tenant, and `tenants`
+overrides specific ones. `burst` defaults to the per-second rate when unset.
+Over-limit requests get HTTP 429 with `Retry-After`. The limit is per process.
+The limit keys on the tenant, not the API key, since tenant names are config
+values and keys are secrets kept in the environment.
 
 ## Request Hints
 

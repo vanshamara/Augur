@@ -222,15 +222,14 @@ func (s *Server) handleDecisionDebug(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthenticatedChatCompletions(w http.ResponseWriter, r *http.Request) {
-	key, ok := s.authorize(r)
-	if !ok {
+	if !s.authorized(r) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeError(w, http.StatusUnauthorized, "unauthorized", "valid API key is required")
 		return
 	}
-	if !s.allowRequest(key) {
+	if !s.allowRequest(s.tenantID(r)) {
 		w.Header().Set("Retry-After", "1")
-		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "client rate limit exceeded")
+		writeError(w, http.StatusTooManyRequests, "rate_limit_error", "tenant rate limit exceeded")
 		return
 	}
 	s.handleChatCompletions(w, r)
@@ -262,17 +261,13 @@ func (s *Server) authorize(r *http.Request) (string, bool) {
 	return "", false
 }
 
-// allowRequest applies the per-client rate limit. With auth off all traffic
-// shares one bucket, since there is no client key to tell callers apart.
-func (s *Server) allowRequest(key string) bool {
+// allowRequest applies the per-tenant rate limit. Tenants with no override use
+// the default rate, and the default tenant covers traffic with no tenant header.
+func (s *Server) allowRequest(tenant string) bool {
 	if s.rateLimiter == nil {
 		return true
 	}
-	identity := key
-	if identity == "" {
-		identity = "anonymous"
-	}
-	return s.rateLimiter.Allow(identity)
+	return s.rateLimiter.Allow(tenant)
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {

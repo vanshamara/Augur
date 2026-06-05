@@ -209,22 +209,32 @@ Auth protects `/v1/chat/completions`, `/debug/backends`, and
 
 ## Rate Limiting
 
-Turn on a per-client request rate limit with `rate_limit`:
+Turn on a per-tenant request rate limit with `rate_limit`:
 
 ```yaml
 rate_limit:
   enabled: true
   requests_per_second: 20
   burst: 40
+  tenants:
+    premium:
+      requests_per_second: 100
+      burst: 200
 ```
 
-The limit applies to `/v1/chat/completions`. When `AUGUR_GATEWAY_API_KEYS` is
-set, each client key gets its own token bucket. When auth is off, all traffic
-shares one bucket, since there is no key to tell callers apart. `burst` defaults
-to the per-second rate when you leave it unset. Over-limit requests get HTTP 429
-with a `Retry-After` header. Like tenant limits, this is per process, so the
-effective limit across replicas is the per-replica limit times the replica
-count.
+The limit applies to `/v1/chat/completions` and is keyed by the tenant from the
+`X-Augur-Tenant` header, the same identity the tenant cost and in-flight limits
+use. Each tenant gets its own token bucket. `requests_per_second` and `burst` set
+the default for every tenant, and `tenants` overrides specific ones. The default
+tenant covers traffic with no tenant header. `burst` defaults to the per-second
+rate when unset. Over-limit requests get HTTP 429 with a `Retry-After` header.
+
+This limit is keyed by tenant, not the API key, because tenant names are config
+values while keys are secrets kept in the environment. The tenant header is
+trusted, so set it from a trusted caller behind gateway auth. For raw edge abuse
+control on a public endpoint, rate limit at your proxy too. Like the tenant cost
+and in-flight limits, this is per process, so the effective cluster limit is the
+per-replica limit times the replica count.
 
 ## Runtime Features
 

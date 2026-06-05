@@ -43,7 +43,13 @@ type App struct {
 }
 
 type RateLimit struct {
-	Enabled           bool    `json:"enabled"`
+	Enabled           bool                       `json:"enabled"`
+	RequestsPerSecond float64                    `json:"requests_per_second"`
+	Burst             int                        `json:"burst"`
+	Tenants           map[string]RateLimitTenant `json:"tenants"`
+}
+
+type RateLimitTenant struct {
 	RequestsPerSecond float64 `json:"requests_per_second"`
 	Burst             int     `json:"burst"`
 }
@@ -573,7 +579,7 @@ func validateBudgets(config Budgets) error {
 }
 
 // validateRateLimit checks the rate limit values and fills a sensible burst when
-// the limit is enabled without one.
+// a rate is set without one.
 func validateRateLimit(config *RateLimit) error {
 	if config.RequestsPerSecond < 0 {
 		return errors.New("rate_limit requests_per_second cannot be negative")
@@ -581,23 +587,41 @@ func validateRateLimit(config *RateLimit) error {
 	if config.Burst < 0 {
 		return errors.New("rate_limit burst cannot be negative")
 	}
+	for name, tenant := range config.Tenants {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("rate_limit tenant name cannot be empty")
+		}
+		if tenant.RequestsPerSecond < 0 {
+			return fmt.Errorf("rate_limit tenant %q requests_per_second cannot be negative", name)
+		}
+		if tenant.Burst < 0 {
+			return fmt.Errorf("rate_limit tenant %q burst cannot be negative", name)
+		}
+		tenant.Burst = defaultBurst(tenant.RequestsPerSecond, tenant.Burst)
+		config.Tenants[name] = tenant
+	}
 	if !config.Enabled {
 		return nil
 	}
-	if config.RequestsPerSecond <= 0 {
-		return errors.New("rate_limit requests_per_second must be positive when enabled")
+	if config.RequestsPerSecond <= 0 && len(config.Tenants) == 0 {
+		return errors.New("rate_limit needs requests_per_second or tenant overrides when enabled")
 	}
-	if config.Burst == 0 {
-		burst := int(config.RequestsPerSecond)
-		if float64(burst) < config.RequestsPerSecond {
-			burst++
-		}
-		if burst < 1 {
-			burst = 1
-		}
-		config.Burst = burst
-	}
+	config.Burst = defaultBurst(config.RequestsPerSecond, config.Burst)
 	return nil
+}
+
+func defaultBurst(requestsPerSecond float64, burst int) int {
+	if requestsPerSecond <= 0 || burst != 0 {
+		return burst
+	}
+	rounded := int(requestsPerSecond)
+	if float64(rounded) < requestsPerSecond {
+		rounded++
+	}
+	if rounded < 1 {
+		rounded = 1
+	}
+	return rounded
 }
 
 func validatePolicy(config control.PolicyConfig) error {

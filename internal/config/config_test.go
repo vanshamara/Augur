@@ -815,6 +815,23 @@ func TestParseRejectsEnabledRateLimitWithoutRate(t *testing.T) {
 	}
 }
 
+func TestParseAllowsRateLimitWithOnlyTenantOverrides(t *testing.T) {
+	app, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"enabled":true,"tenants":{"premium":{"requests_per_second":10}}}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if app.RateLimit.Tenants["premium"].Burst != 10 {
+		t.Fatalf("tenant override burst got %d, want 10", app.RateLimit.Tenants["premium"].Burst)
+	}
+}
+
+func TestParseRejectsNegativeRateLimitTenantOverride(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"enabled":true,"requests_per_second":5,"tenants":{"premium":{"requests_per_second":-1}}}}`))
+	if err == nil {
+		t.Fatal("negative tenant override should fail")
+	}
+}
+
 func TestParseRejectsNegativeRateLimit(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"requests_per_second":-1}}`))
 	if err == nil {

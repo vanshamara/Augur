@@ -1030,7 +1030,7 @@ func TestMetricsEndpointServesHandler(t *testing.T) {
 func TestChatCompletionsRateLimited(t *testing.T) {
 	server, err := New(Config{
 		Gateway:     &fakeGateway{resp: core.Response{Backend: "fast", OutputText: "ok"}},
-		RateLimiter: NewRateLimiter(0.001, 1),
+		RateLimiter: NewRateLimiter(RateSpec{RequestsPerSecond: 0.001, Burst: 1}, nil),
 		Now:         func() time.Time { return time.Unix(123, 0) },
 		NewID:       func() string { return "chatcmpl-test" },
 	})
@@ -1052,6 +1052,45 @@ func TestChatCompletionsRateLimited(t *testing.T) {
 	}
 	if second.Header().Get("Retry-After") == "" {
 		t.Fatal("rate-limited response should set Retry-After")
+	}
+}
+
+func TestChatCompletionsRateLimitHonorsTenantOverride(t *testing.T) {
+	server, err := New(Config{
+		Gateway: &fakeGateway{resp: core.Response{Backend: "fast", OutputText: "ok"}},
+		RateLimiter: NewRateLimiter(
+			RateSpec{RequestsPerSecond: 0.001, Burst: 1},
+			map[string]RateSpec{"premium": {RequestsPerSecond: 0.001, Burst: 3}},
+		),
+		Now:   func() time.Time { return time.Unix(123, 0) },
+		NewID: func() string { return "chatcmpl-test" },
+	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hi"}]}`
+
+	send := func(tenant string) int {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("X-Augur-Tenant", tenant)
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 3; i++ {
+		if code := send("premium"); code != http.StatusOK {
+			t.Fatalf("premium request %d got %d, want 200", i+1, code)
+		}
+	}
+	if code := send("premium"); code != http.StatusTooManyRequests {
+		t.Fatalf("premium over its burst got %d, want 429", code)
+	}
+	if code := send("standard"); code != http.StatusOK {
+		t.Fatalf("standard first request got %d, want 200", code)
+	}
+	if code := send("standard"); code != http.StatusTooManyRequests {
+		t.Fatalf("standard second request got %d, want 429", code)
 	}
 }
 

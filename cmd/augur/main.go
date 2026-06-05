@@ -478,7 +478,18 @@ func buildRateLimiter(config appconfig.RateLimit) *httpapi.RateLimiter {
 	if !config.Enabled {
 		return nil
 	}
-	return httpapi.NewRateLimiter(config.RequestsPerSecond, config.Burst)
+	overrides := make(map[string]httpapi.RateSpec, len(config.Tenants))
+	for tenant, limit := range config.Tenants {
+		overrides[tenant] = httpapi.RateSpec{
+			RequestsPerSecond: limit.RequestsPerSecond,
+			Burst:             limit.Burst,
+		}
+	}
+	def := httpapi.RateSpec{
+		RequestsPerSecond: config.RequestsPerSecond,
+		Burst:             config.Burst,
+	}
+	return httpapi.NewRateLimiter(def, overrides)
 }
 
 func buildDecisionLog(config appconfig.DecisionLog) *dataplane.DecisionLog {
