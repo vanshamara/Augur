@@ -386,7 +386,11 @@ tenants:
 - `header`: request header used for tenant identity.
 - `default_tenant`: tenant used when the header is missing.
 - `max_in_flight`: active request limit per tenant in this process.
-- `max_cost_usd`: observed spend limit per tenant since process start.
+- `max_cost_usd`: best-effort spend limit per tenant. It is not a hard ceiling. It
+  is counted per process and resets on restart, so across replicas the real limit
+  is this value times the replica count. It stops new requests once observed spend
+  reaches the limit, but in-flight requests can still push spend past it. Treat it
+  as a guardrail, not a billing cap.
 - tenant `policy`: request default overrides.
 
 Add `tenant` to `data_plane.filters` to enforce tenant limits.
