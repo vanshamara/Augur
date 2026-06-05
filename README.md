@@ -89,5 +89,6 @@ available, Augur adds routing headers for those too.
 - [Deployment notes](docs/deployment.md)
 - [Architecture](docs/architecture.md)
 - [Baseline router report](docs/baseline-report.md)
+- [Benchmarks](docs/benchmarks.md)
 - [Contributing](CONTRIBUTING.md)
 - [Security](SECURITY.md)

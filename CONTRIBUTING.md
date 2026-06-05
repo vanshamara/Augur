@@ -28,6 +28,13 @@ For routing, fallback, provider, or concurrency changes, also run:
 go test -race ./...
 ```
 
+To reproduce the overhead, throughput, and reliability benchmarks (see
+[docs/benchmarks.md](docs/benchmarks.md)):
+
+```bash
+go test -bench=. -benchmem ./internal/control/ ./internal/dataplane/
+```
+
 ## Pull Requests
 
 - Include tests with behavior changes.

@@ -27,6 +27,11 @@ Not measured:
 - Envoy xDS, health checking, outlier detection, panic mode, or filters
 - LiteLLM provider adapters, virtual keys, budgets, or spend tracking
 
+Augur's own gateway overhead, throughput, and circuit-breaker behavior are measured
+separately in wall-clock microbenchmarks; see [benchmarks.md](benchmarks.md). This
+comparison still does not model the proxy overhead, retries, or streaming of a real
+LiteLLM or Envoy deployment.
+
 ## Shim Definitions
 
 `litellm-shuffle` models LiteLLM-style weighted simple shuffle with equal weights
