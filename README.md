@@ -1,125 +1,38 @@
-# Augur
+# Augur: Request-Aware LLM Gateway
 
-Augur is a self-hosted inference gateway. It accepts OpenAI-compatible chat and
-embeddings requests and routes them across configured model backends using
-health, latency, cost, request shape, and optional learning.
+[![Test](https://github.com/vanshamara/Augur/actions/workflows/test.yml/badge.svg)](https://github.com/vanshamara/Augur/actions/workflows/test.yml)
+![Go](https://img.shields.io/badge/Go-1.26.4-00ADD8?logo=go&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+![OpenAI Compatible](https://img.shields.io/badge/OpenAI-compatible-412991?logo=openai&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Anthropic-supported-191919)
+![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus&logoColor=white)
 
-It is useful for:
+Calling an LLM is easy. Picking the right backend for each request is the hard
+part. Augur sits in front of OpenAI, Anthropic, and local OpenAI-compatible
+servers, then routes chat and embeddings requests by policy, health, latency,
+cost, capability, and real outcomes.
 
-- routing across OpenAI, Anthropic, and OpenAI-compatible local models
-- enforcing latency, cost, error, quality, and tenant limits
-- sending simple and complex requests to different backend pools
-- testing routing policies with deterministic replay
-- comparing learned routing against simple baseline routers
+Use it when one app needs cheap chat, stronger reasoning, fallback chains,
+canaries, and a clear answer to why each request went where it did.
 
-## Status
+## What It Does
 
-Augur is a v0 self-hosted gateway.
-
-Built or mostly built:
-
-- OpenAI-style `/v1/chat/completions` and `/v1/embeddings` HTTP API
-- JSON and YAML config
-- static, round-robin, least-loaded, EWMA, cost-aware, P2C, and bandit routers
-- route rules with task, tenant, tier, and candidate backend matching
-- backend capability filtering for chat, reasoning, coding, and embedding
-- route-specific fallback chains for retryable upstream failures
-- deterministic canary percentage rollout and shadow mode
-- active health checks, circuit, concurrency, tenant, hedging, and single-flight data-plane logic
-- backend debug output for health, circuit state, latency window, and error rate
-- optional route-decision debug log that explains candidate filtering per request
-- Prometheus metrics at `/metrics` with a starter Grafana dashboard and alert rules
-- OpenAI-compatible and Anthropic backend adapters, plus per-backend base URL and
-  key for local servers like Ollama
-- streaming responses
-- optional gateway auth
-- request hints through headers and chat request metadata
-- local prompt classification for chat, reasoning, and coding requests
-- live learning from real gateway responses
-- learned state persistence
-- deterministic replay harness
-- local product-promise demo over scripted backends
-- local LiteLLM-style and Envoy-style router shims
-- Dockerfile and release checklist
-
-Partial:
-
-- operator visibility is Prometheus metrics plus JSON debug output. A starter
-  Grafana dashboard ships in `dashboards/`, but there is no hosted dashboard.
-
-Not included:
-
-- managed hosting
-- built-in TLS
-- Kubernetes manifests
-- production dashboards
-- real traffic tuning for your workload
+- Serves `/v1/chat/completions` and `/v1/embeddings`.
+- Routes across OpenAI, Anthropic, and OpenAI-compatible backends.
+- Filters backends by capability, health, circuit state, tenant limits, and cost
+  budget before a provider call.
+- Supports fallback chains, canaries, shadow canaries, hedging, and single
+  flight.
+- Exposes Prometheus metrics, backend debug state, and route decision records.
+- Can learn from gateway outcomes when the bandit router is enabled.
 
 ## Requirements
 
-- Go 1.26.3 or newer
+- Go 1.26.4 or newer
 
-## Test
+## Quick Start
 
-Run the full suite:
-
-```bash
-go test ./...
-```
-
-Run the local startup smoke test:
-
-```bash
-scripts/smoke-test.sh
-```
-
-Run the multi-backend routing smoke test:
-
-```bash
-scripts/routing-smoke-test.sh
-```
-
-Run a real provider smoke test:
-
-```bash
-export OPENAI_API_KEY="..."
-export AUGUR_SMOKE_MODEL="gpt-4.1-mini"
-export AUGUR_SMOKE_CHAT=1
-scripts/smoke-test.sh
-```
-
-Run a bounded live learning test:
-
-```bash
-cp .env.example .env.local
-# edit .env.local and set OPENAI_API_KEY
-scripts/live-learning-test.sh
-```
-
-The live learning test sends real requests through Augur and verifies that
-learned state was saved. It limits request count, not provider billing.
-
-Enable judge scoring for sampled quality labels:
-
-```bash
-AUGUR_LIVE_JUDGE=1 \
-AUGUR_LIVE_JUDGE_MODEL=gpt-4.1-mini \
-AUGUR_LIVE_JUDGE_SAMPLE_RATE=0.25 \
-scripts/live-learning-test.sh
-```
-
-Judge mode sends extra provider calls for the sampled responses.
-
-Run the same live test without hint headers to exercise automatic prompt
-classification:
-
-```bash
-AUGUR_LIVE_SEND_HINTS=0 scripts/live-learning-test.sh
-```
-
-## Run
-
-Use environment config for a quick local run:
+Run with environment config:
 
 ```bash
 export OPENAI_API_KEY="..."
@@ -127,21 +40,21 @@ export AUGUR_BACKENDS=fast=gpt-4.1-nano,balanced=gpt-4.1-mini,strong=gpt-4.1
 go run ./cmd/augur
 ```
 
-Or use a config file:
+Run with a config file:
 
 ```bash
 export OPENAI_API_KEY="..."
-export AUGUR_CONFIG="configs/request-aware.example.yaml"
+export AUGUR_CONFIG=configs/request-aware.example.yaml
 go run ./cmd/augur
 ```
 
-Check a config before starting the gateway:
+Validate a config:
 
 ```bash
 go run ./cmd/augur validate --config configs/request-aware.example.yaml
 ```
 
-Explain a request before sending traffic to a provider:
+Preview a routing decision without calling a provider:
 
 ```bash
 go run ./cmd/augur explain \
@@ -150,12 +63,10 @@ go run ./cmd/augur explain \
   --type chat
 ```
 
-`explain` prints the matched route, candidates, exclusions, canary choice,
-fallback plan, cost estimate, and selected backend as JSON. It uses dry-run
-backends and does not call a provider. `simulate` is an alias for the same
-command.
+`explain` also accepts `--request path.json`, inline JSON, or `--request -` for
+stdin. `simulate` is an alias.
 
-Send a request:
+Send a chat request:
 
 ```bash
 curl http://127.0.0.1:8080/v1/chat/completions \
@@ -168,317 +79,14 @@ curl http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
-The response includes `X-Augur-Backend`, which shows the final backend Augur
-used. When a route fallback runs, Augur also returns `X-Augur-Fallback-Count`
-and `X-Augur-Attempted-Backends`. When backend prices are configured, Augur adds
-`X-Augur-Estimated-Cost-USD` and `X-Augur-Cost-USD` so you can see the estimated
-and realized cost of the call. Streaming responses include the estimate up
-front; realized streaming cost is known only after the stream ends.
-
-Embeddings go through the same engine. Send them to `/v1/embeddings` and route
-them to embedding-capable backends:
-
-```bash
-curl http://127.0.0.1:8080/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "augur-embed",
-    "input": ["first text", "second text"]
-  }'
-```
-
-The same routing, capability filtering, cost budgets, fallback, canary, and
-decision log apply. Only embedding-capable backends are eligible. Set
-`capabilities: ["embedding"]` on those backends.
-
-Send request-aware hints when the caller knows the workload:
-
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-Augur-Request-Type: reasoning" \
-  -H "X-Augur-User-Tier: premium" \
-  -H "X-Augur-User-ID: user-123" \
-  -H "X-Augur-Latency-Budget-Ms: 2400" \
-  -H "X-Augur-Cost-Budget-USD: 0.05" \
-  -H "X-Augur-Prompt-Tokens: 820" \
-  -d '{
-    "model": "augur-chat",
-    "messages": [
-      {"role": "user", "content": "Solve this carefully."}
-    ]
-  }'
-```
-
-The bandit uses these hints, token counts, and real outcomes to learn which
-backend fits each request shape. If `X-Augur-Prompt-Tokens` is missing, Augur
-uses a local text-length estimate before routing.
-
-Learning is an optional advanced mode. Routing works without it. Health, latency,
-cost, task type, canary, and fallback all run with any router, so you can keep
-the bandit off and use a simple router. When the bandit is on, it only ranks the
-backends that route rules and filters already allow. It cannot pick a backend
-that a health, capability, budget, or canary rule has removed.
-
-Routes can also define a canary backend with a deterministic percentage. Canary
-responses include `X-Augur-Canary` and `X-Augur-Canary-Backend`. Shadow canaries
-call the candidate backend without returning its response.
-
-When hints are missing, Augur runs a local prompt classifier before routing. It
-marks simple or spam-like prompts as cheap chat, and marks harder coding or
-reasoning prompts as higher-need requests. This classifier does not call a
-model, so it does not add routing cost.
-
-When a request carries a cost budget, Augur estimates the most each primary,
-fallback, or canary backend could cost before routing and drops the ones that
-would go over budget. If every backend is over budget, the request fails with a
-clear over-budget error instead of calling an expensive model. Set
-`budgets.require_pricing: true` to also drop unpriced backends from budgeted
-requests.
-
-The request-aware example uses quality as a floor and then optimizes latency and
-cost among the feasible backends. This keeps cheaper models in play without
-letting cost override the configured quality target. Request type controls route
-matching and backend capability filtering. It is not a complete media or task
-gateway.
-
-## Demo The Product Promises
-
-Run the local demo to see all six routing promises in one pass:
-
-```bash
-go run ./cmd/demo
-```
-
-It checks health, latency, cost budget, task type, canary rollout, and fallback
-against scripted in-memory backends. No real provider is called, so it is
-deterministic and free. The command exits non-zero if any promise does not hold.
-
-## Compare Routers
-
-Run the deterministic comparison report:
-
-```bash
-go run ./cmd/compare
-```
-
-The report uses mock backends and does not call real provider APIs.
-
-## Configure Routing
-
-Routing is driven by a config file. Each backend lists its model, capabilities,
-and prices. Each route says which backends can serve a kind of request, with
-optional fallbacks and a canary.
-
-```yaml
-backends:
-  - id: "fast"
-    model: "gpt-4.1-nano"
-    capabilities: ["chat"]
-    max_completion_tokens: 512
-  - id: "balanced"
-    model: "gpt-4.1-mini"
-    capabilities: ["chat", "reasoning", "coding"]
-    max_completion_tokens: 768
-  - id: "strong"
-    model: "gpt-4.1"
-    capabilities: ["reasoning", "coding"]
-    max_completion_tokens: 1024
-pricing:
-  models:
-    gpt-4.1-nano:
-      input_cost_per_token: 0.0000001
-      output_cost_per_token: 0.0000004
-    gpt-4.1-mini:
-      input_cost_per_token: 0.0000004
-      output_cost_per_token: 0.0000016
-    gpt-4.1:
-      input_cost_per_token: 0.000002
-      output_cost_per_token: 0.000008
-routes:
-  - name: "simple-chat"
-    match:
-      task_types: ["chat"]
-    candidates:
-      - backend: "fast"
-    fallbacks:
-      - backend: "balanced"
-  - name: "reasoning"
-    match:
-      task_types: ["reasoning"]
-    candidates:
-      - backend: "balanced"
-    fallbacks:
-      - backend: "strong"
-    canary:
-      backend: "strong"
-      percent: 5
-      sticky_key: "tenant_and_request"
-  - name: "default"
-    candidates:
-      - backend: "fast"
-      - backend: "balanced"
-      - backend: "strong"
-router:
-  type: "cost_aware"
-budgets:
-  cost_budget_usd: 0.02
-  require_pricing: true
-```
-
-Reading the example:
-
-- A `chat` request matches `simple-chat`, goes to `fast`, and falls back to
-  `balanced` if `fast` fails with a retryable error before a response.
-- A `reasoning` request goes to `balanced`, falls back to `strong`, and sends 5
-  percent of traffic to `strong` as a canary. The same `tenant_and_request` key
-  stays on the same side across retries.
-- Anything else matches the `default` route.
-- The `cost_aware` router prefers the cheapest eligible backend, and the
-  `cost_budget_usd` budget drops any backend whose estimated cost is over budget.
-
-See `configs/cost-aware.example.yaml` for a budget-focused config and
-`configs/request-aware.example.yaml` for a learned-routing config.
-
-## Mix Providers And Local Models
-
-Each backend picks its own provider, base URL, and key, so one route can fall
-back across providers or to a local model:
-
-```yaml
-backends:
-  - id: "openai"
-    model: "gpt-4.1-mini"
-  - id: "claude"
-    model: "claude-3-5-sonnet-latest"
-    provider: "anthropic"
-  - id: "local"
-    model: "llama3.1"
-    base_url: "http://localhost:11434/v1"
-routes:
-  - name: "default"
-    candidates:
-      - backend: "openai"
-    fallbacks:
-      - backend: "claude"
-      - backend: "local"
-```
-
-- `provider` is `openai` (default) or `anthropic`. The `openai` adapter also
-  serves any OpenAI-compatible server, such as Ollama, vLLM, or LM Studio.
-- `base_url` points a backend at a specific endpoint. Local servers usually need
-  no key, so leave the key unset.
-- Anthropic uses `ANTHROPIC_API_KEY`. OpenAI uses `OPENAI_API_KEY` unless a
-  backend sets its own `api_key_env`.
-- Anthropic backends serve chat, not embeddings. When their capabilities are
-  omitted, Augur keeps them out of embedding routes. Listing `embedding` on an
-  Anthropic backend is rejected at startup.
-
-## Explain A Routing Decision
-
-Turn on the decision log:
-
-```yaml
-data_plane:
-  decision_log:
-    enabled: true
-    size: 256
-```
-
-Then ask for one request by id:
-
-```bash
-curl "http://127.0.0.1:8080/debug/decisions?request_id=req-123" \
-  -H "Authorization: Bearer $AUGUR_CLIENT_KEY"
-```
-
-Example fields:
-
-```json
-{
-  "request_id": "req-123",
-  "route_name": "default",
-  "candidates": ["cheap", "strong"],
-  "excluded": [
-    {
-      "backend": "strong",
-      "stage": "budget",
-      "reason": "estimated cost over budget"
-    }
-  ],
-  "reason_summary": "Selected cheap; excluded strong at budget because estimated cost over budget.",
-  "selected": "cheap"
-}
-```
-
-Augur also emits the finished decision summary as an OpenTelemetry span event
-named `route.decision` when tracing is configured.
-
-## Config
-
-Public examples are in `configs/`:
-
-- `minimal.example.json` and `minimal.example.yaml`
-- `cost-aware.example.json` and `cost-aware.example.yaml`
-- `request-aware.example.json` and `request-aware.example.yaml`
-- `augur.example.json` and `augur.example.yaml`
-- `deployment.example.json` and `deployment.example.yaml`
-
-For local Docker runs, copy the env example and fill in your real key:
-
-```bash
-cp .env.example .env.local
-```
-
-`AUGUR_BACKENDS` is a comma-separated list of `id=model` pairs. Env-only mode is
-for quick local runs and uses round-robin routing by default. Use a config file
-when you want cost-aware, latency-aware, or learned backend selection.
-
-Keep real config files and API keys outside the repo.
-
-## Limitations
-
-Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
-
-- It speaks the OpenAI-compatible chat and embeddings APIs. There is no image,
-  audio, or video API surface.
-- It ships OpenAI-compatible and Anthropic backend adapters. Local and
-  open-source servers like Ollama, vLLM, and LM Studio work through the
-  OpenAI-compatible adapter with a per-backend `base_url`. Anthropic backends do
-  not serve embeddings, and streaming for Anthropic backends is not implemented
-  yet.
-- It has no built-in TLS and no Kubernetes manifests. It serves Prometheus
-  metrics and ships a starter Grafana dashboard, but no hosted dashboard. Put it
-  behind your own proxy and monitoring.
-- The decision log lives in memory per process. In a multi-replica deployment a
-  request id only resolves on the replica that served it.
-- Learned routing is optional and has not been tuned against your workload. Start
-  with a simple router and real traffic data.
-- The baseline report compares routing policies against local shims. It does not
-  claim Augur is faster than a real LiteLLM or Envoy deployment.
+The response includes `X-Augur-Backend`. When fallback, canary, or cost data is
+available, Augur adds routing headers for those too.
 
 ## Docs
 
-- [Architecture](docs/architecture.md)
 - [Config reference](docs/config-reference.md)
 - [Deployment notes](docs/deployment.md)
-- [Baseline report](docs/baseline-report.md)
-- [Release checklist](docs/release-checklist.md)
-
-## Security
-
-Do not commit API keys or real deployment config.
-Set `AUGUR_GATEWAY_API_KEYS` for shared, remote, or public deployments. It
-protects `/v1/chat/completions`, `/debug/backends`, and `/debug/decisions`.
-
-The repo ignores common local secret paths:
-
-- `.env`
-- `.env.*`
-- `*.pem`
-- `*.key`
-- `secrets/`
-- `.augur/`
-- `docs-private/`
-
-Before publishing, run a secret scan and review staged files.
+- [Architecture](docs/architecture.md)
+- [Baseline router report](docs/baseline-report.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security](SECURITY.md)

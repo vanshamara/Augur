@@ -1,6 +1,6 @@
 # Baseline Router Report
 
-Date: June 4, 2026
+Date: June 5, 2026
 
 The table below was reproduced with `go run ./cmd/compare` on this date and the
 current numbers include the request-shape regime and the bandit router.
@@ -30,8 +30,8 @@ Not measured:
 ## Shim Definitions
 
 `litellm-shuffle` models LiteLLM-style weighted simple shuffle with equal weights
-for every mock backend. Equal weights keep the comparison fair because the shim
-does not get hidden latency, quality, or cost knowledge.
+for every mock backend. Equal weights keep the shim from using hidden latency,
+quality, or cost knowledge.
 
 `envoy-least-request` models Envoy-style least request routing. With equal
 weights, it samples two available backends and picks the one with fewer active
@@ -90,18 +90,18 @@ differences. It does not prove bandit is best for every regime.
 
 ## Takeaways
 
-The LiteLLM-style shim is a fair random baseline. With equal weights, it mostly
-matches round-robin. That is expected.
+The LiteLLM-style shim is a random baseline. With equal weights, it mostly
+matches round-robin.
 
 The Envoy-style shim is stronger for load smoothing because it uses active
 request counts. It improves p95 by about 30 to 47 ms versus round-robin in these
 runs, but it does not optimize semantic quality or cost.
 
-Augur-specific policies can outperform the proxy-style shims when the regime has
-a signal they can use, such as latency drift or cost. That result is about the
-policy layer only. It does not say Augur is faster than a real LiteLLM or Envoy
-deployment.
+Augur-specific policies can score better than the proxy-style shims when the
+regime has a signal they can use, such as latency drift or cost. That result is
+about the policy layer only. It does not say Augur is faster than a real LiteLLM
+or Envoy deployment.
 
 Learned routing now has one scoped positive result: it reduces objective regret
 in the request-shape regime. The same report also shows regimes where simple
-routers are better, so the bandit should remain an optional advanced mode.
+routers are better, so the bandit should remain optional.

@@ -77,6 +77,64 @@ func TestRunExplainReadsRequestFileMetadata(t *testing.T) {
 	}
 }
 
+func TestRunExplainReadsInlineRequestJSON(t *testing.T) {
+	configPath := writeExplainConfig(t)
+	var stdout bytes.Buffer
+	requestJSON := `{
+		"messages": [{"role": "user", "content": "Implement a retry loop."}],
+		"metadata": {
+			"augur_request_type": "coding",
+			"augur_prompt_tokens": "300"
+		}
+	}`
+
+	err := runExplain(context.Background(), []string{
+		"--config", configPath,
+		"--request", requestJSON,
+		"--request-id", "req-inline",
+	}, func(string) string {
+		return ""
+	}, &stdout)
+	if err != nil {
+		t.Fatalf("explain inline JSON: %v", err)
+	}
+
+	out := decodeExplainOutput(t, stdout.Bytes())
+	if out.RequestType != "coding" || out.PromptTokens != 300 {
+		t.Fatalf("inline request output got %+v", out)
+	}
+	if out.Selected != "strong" {
+		t.Fatalf("selected backend got %q", out.Selected)
+	}
+}
+
+func TestRunExplainReadsRequestFromStdin(t *testing.T) {
+	configPath := writeExplainConfig(t)
+	stdin := bytes.NewBufferString(`{
+		"messages": [{"role": "user", "content": "Solve this carefully."}],
+		"metadata": {
+			"augur_request_type": "reasoning"
+		}
+	}`)
+	var stdout bytes.Buffer
+
+	err := runExplainWithInput(context.Background(), []string{
+		"--config", configPath,
+		"--request", "-",
+		"--request-id", "req-stdin",
+	}, func(string) string {
+		return ""
+	}, stdin, &stdout)
+	if err != nil {
+		t.Fatalf("explain stdin: %v", err)
+	}
+
+	out := decodeExplainOutput(t, stdout.Bytes())
+	if out.RequestType != "reasoning" || out.Selected != "strong" {
+		t.Fatalf("stdin request output got %+v", out)
+	}
+}
+
 func TestRunExplainRequiresRequestShape(t *testing.T) {
 	configPath := writeExplainConfig(t)
 	err := runExplain(context.Background(), []string{"--config", configPath}, func(string) string {

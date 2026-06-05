@@ -9,8 +9,8 @@ client
   -> internal/httpapi
   -> internal/dataplane
   -> internal/router or internal/control
-  -> internal/backend/openai
-  -> OpenAI-compatible provider
+  -> internal/backend/openai or internal/backend/anthropic
+  -> provider or local OpenAI-compatible server
 ```
 
 ## Request Flow
@@ -30,8 +30,8 @@ client
 9. If the chosen backend fails with a retryable error before a complete
    response, `internal/dataplane` tries the route fallback chain.
 10. Shadow canaries call the candidate backend without returning that response.
-11. `internal/dataplane` applies any per-backend timeout, then
-    `internal/backend/openai` sends the attempt to the provider.
+11. `internal/dataplane` applies any per-backend timeout, then the backend
+    adapter sends the attempt to the provider or local server.
 12. Augur returns the response and sets `X-Augur-Backend`, `X-Augur-Route`,
     `X-Augur-Fallback-Count`, `X-Augur-Attempted-Backends`, cost headers, and
     canary headers when available.
@@ -77,10 +77,9 @@ file. It does not store prompts, responses, or API keys.
 
 ## Learning State
 
-Learning is an optional advanced mode. It is not required for routing. The basic
-product works with any router, and `internal/live` only wraps the gateway to
-observe outcomes after the fact. It does not change how requests are filtered or
-routed.
+Learning is optional. Routing works with any router, and `internal/live` only
+wraps the gateway to observe outcomes after the fact. It does not change how
+requests are filtered or routed.
 
 The bandit is a router like any other. The gateway hands it the candidate set
 that route rules and filters already produced, so the bandit only ranks backends
@@ -100,6 +99,6 @@ and backend set match.
 Augur includes the local gateway, Dockerfile, config examples, and tests.
 
 You still need to provide production hosting details such as TLS termination,
-Kubernetes manifests, dashboards, and workload-specific tuning.
+Kubernetes manifests, alert thresholds, and workload-specific tuning.
 
 Augur does not yet expose first-class image, audio, or video routing APIs.

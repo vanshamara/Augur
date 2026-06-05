@@ -1094,19 +1094,6 @@ func TestExampleConfigsLoad(t *testing.T) {
 	}
 }
 
-func TestReadmeRoutingExampleParses(t *testing.T) {
-	config, err := ParseYAML(readmeRoutingExample(t))
-	if err != nil {
-		t.Fatalf("parse README routing example: %v", err)
-	}
-	if len(config.Routes) != 3 {
-		t.Fatalf("README routing example routes got %+v", config.Routes)
-	}
-	if config.Router.Type != "cost_aware" {
-		t.Fatalf("README routing example router got %q", config.Router.Type)
-	}
-}
-
 func TestCostAwareExampleDemonstratesBudgetExclusion(t *testing.T) {
 	paths := []string{
 		"../../configs/cost-aware.example.json",
@@ -1152,27 +1139,6 @@ func exampleConfigPaths(t *testing.T) []string {
 		paths = append(paths, matches...)
 	}
 	return paths
-}
-
-func readmeRoutingExample(t *testing.T) []byte {
-	t.Helper()
-	data, err := os.ReadFile("../../README.md")
-	if err != nil {
-		t.Fatalf("read README: %v", err)
-	}
-	text := string(data)
-	marker := "```yaml\nbackends:\n"
-	start := strings.Index(text, marker)
-	if start < 0 {
-		t.Fatal("README routing example not found")
-	}
-	start += len("```yaml\n")
-	rest := text[start:]
-	end := strings.Index(rest, "\n```")
-	if end < 0 {
-		t.Fatal("README routing example is missing closing fence")
-	}
-	return []byte(rest[:end])
 }
 
 func backendByID(t *testing.T, config App, id string) Backend {

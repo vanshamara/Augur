@@ -76,6 +76,10 @@ type dryBackend struct {
 }
 
 func runExplain(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
+	return runExplainWithInput(ctx, args, getenv, os.Stdin, stdout)
+}
+
+func runExplainWithInput(ctx context.Context, args []string, getenv func(string) string, stdin io.Reader, stdout io.Writer) error {
 	options, err := parseExplainFlags(args, getenv)
 	if err != nil {
 		return err
@@ -84,7 +88,7 @@ func runExplain(ctx context.Context, args []string, getenv func(string) string, 
 	if err != nil {
 		return err
 	}
-	req, err := explainCoreRequest(options, config)
+	req, err := explainCoreRequest(options, config, stdin)
 	if err != nil {
 		return err
 	}
@@ -136,8 +140,8 @@ func parseExplainFlags(args []string, getenv func(string) string) (explainFlags,
 	return options, nil
 }
 
-func explainCoreRequest(options explainFlags, config appconfig.App) (core.Request, error) {
-	body, err := readExplainRequest(options)
+func explainCoreRequest(options explainFlags, config appconfig.App, stdin io.Reader) (core.Request, error) {
+	body, err := readExplainRequest(options, stdin)
 	if err != nil {
 		return core.Request{}, err
 	}
@@ -183,11 +187,12 @@ func explainCoreRequest(options explainFlags, config appconfig.App) (core.Reques
 	}, nil
 }
 
-func readExplainRequest(options explainFlags) (explainChatRequest, error) {
-	if strings.TrimSpace(options.RequestPath) == "" {
+func readExplainRequest(options explainFlags, stdin io.Reader) (explainChatRequest, error) {
+	source := strings.TrimSpace(options.RequestPath)
+	if source == "" {
 		return explainChatRequest{}, nil
 	}
-	data, err := os.ReadFile(options.RequestPath)
+	data, err := explainRequestData(source, stdin)
 	if err != nil {
 		return explainChatRequest{}, err
 	}
@@ -196,6 +201,21 @@ func readExplainRequest(options explainFlags) (explainChatRequest, error) {
 		return explainChatRequest{}, err
 	}
 	return body, nil
+}
+
+func explainRequestData(source string, stdin io.Reader) ([]byte, error) {
+	if source == "-" {
+		return io.ReadAll(stdin)
+	}
+	if looksLikeJSON(source) {
+		return []byte(source), nil
+	}
+	return os.ReadFile(source)
+}
+
+func looksLikeJSON(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[")
 }
 
 func explainMessages(body explainChatRequest, prompt string) []core.Message {

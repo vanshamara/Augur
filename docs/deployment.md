@@ -5,16 +5,11 @@ behind your own proxy, ingress, or platform layer for public traffic.
 
 ## Build
 
+Run the checks in [Contributing](../CONTRIBUTING.md), then build the binary:
+
 ```bash
 go build -o bin/augur ./cmd/augur
-go test ./...
-go run ./cmd/demo
-scripts/smoke-test.sh
-scripts/routing-smoke-test.sh
 ```
-
-`go run ./cmd/demo` checks the six routing promises against scripted backends. It
-makes no real provider calls.
 
 Run a real provider smoke test before launch:
 
@@ -104,39 +99,8 @@ IDs with real provider model names.
 
 Keep API keys in environment variables, not config files.
 
-Use `configs/request-aware.example.yaml` when you want the bandit to learn from
-request type, budget, and tier hints.
-
-Clients can send these optional headers:
-
-```text
-X-Augur-Request-Type: reasoning
-X-Augur-User-Tier: premium
-X-Augur-User-ID: user-123
-X-Augur-Latency-Budget-Ms: 2400
-X-Augur-Cost-Budget-USD: 0.05
-X-Augur-Prompt-Tokens: 820
-```
-
-If clients do not send these headers, Augur uses a local prompt classifier. It
-does not call a model before routing. If clients know the prompt token count,
-send `X-Augur-Prompt-Tokens` so budget checks do not rely on the local text
-estimate.
-
-Request type is a routing signal. Route rules can match task type, tenant, and
-user tier. Backend capabilities remove incompatible backends before health
-filters and router selection.
-
-Routes can also define `fallbacks`. Augur tries those backends in order when the
-chosen backend fails with a retryable error before a complete response.
-
-Routes can define `canary` for deterministic rollout. Use `shadow: true` when
-you want to call the candidate backend without returning its response.
-
-Use `data_plane.health_check.enabled: true` with the `health` filter to mark dead
-backends before user traffic reaches them. Set `backends[].health_path` only when
-the provider has a cheap endpoint for health checks. Set `backends[].timeout` to
-cap slow attempts before fallback.
+See [Config reference](config-reference.md) for routing fields, request hints,
+fallbacks, canaries, health checks, timeouts, and learning.
 
 ## Runtime State
 
@@ -157,7 +121,8 @@ responses, or API keys.
 
 - `GET /healthz`: process is alive
 - `GET /readyz`: gateway is ready
-- `GET /metrics`: Prometheus metrics for request rate, errors, latency, and cost
+- `GET /metrics`: Prometheus metrics for requests, errors, latency, cost,
+  quality, and reward
 - `GET /debug/backends`: backend health, circuit, latency, and error window state
 - `GET /debug/decisions`: recent routing decisions, or one record with
   `?request_id=...`
@@ -209,7 +174,7 @@ Auth protects `/v1/chat/completions`, `/v1/embeddings`, `/debug/backends`, and
 
 ## Rate Limiting
 
-Turn on a per-tenant request rate limit with `rate_limit`:
+Turn on per-tenant request rate limiting with `rate_limit`:
 
 ```yaml
 rate_limit:
@@ -222,38 +187,11 @@ rate_limit:
       burst: 200
 ```
 
-The limit applies to `/v1/chat/completions` and `/v1/embeddings`, and is keyed by
-the tenant from the `X-Augur-Tenant` header, the same identity the tenant cost
-and in-flight limits
-use. Each tenant gets its own token bucket. `requests_per_second` and `burst` set
-the default for every tenant, and `tenants` overrides specific ones. The default
-tenant covers traffic with no tenant header. `burst` defaults to the per-second
-rate when unset. Over-limit requests get HTTP 429 with a `Retry-After` header.
-
-This limit is keyed by tenant, not the API key, because tenant names are config
-values while keys are secrets kept in the environment. The tenant header is
-trusted, so set it from a trusted caller behind gateway auth. For raw edge abuse
-control on a public endpoint, rate limit at your proxy too. Like the tenant cost
-and in-flight limits, this is per process, so the effective cluster limit is the
+The limit applies to `/v1/chat/completions` and `/v1/embeddings`. It is keyed by
+tenant, not API key. Set the tenant header from a trusted caller behind gateway
+auth. For edge abuse control on a public endpoint, rate limit at your proxy too.
+The built-in limit is per process, so the effective cluster limit is the
 per-replica limit times the replica count.
-
-## Runtime Features
-
-- Embeddings: `POST /v1/embeddings`, routed to backends with the `embedding`
-  capability.
-- Streaming: set `"stream": true`.
-- Hedging: configure `data_plane.hedge`.
-- Backend capabilities: set `backends[].capabilities`.
-- Route fallback chains: set `routes[].fallbacks`.
-- Canary rollout: set `routes[].canary`.
-- Canary rollback thresholds: configure top-level `canary`.
-- Tenant limits: add `tenant` to `data_plane.filters` and configure `tenants`.
-- Per-client rate limit: enable `rate_limit`.
-- Live learning: use `router.type: "bandit"` and `learning.enabled: true`.
-- Persistence: enable `learning.persistence` before relying on learned state
-  across restarts.
-
-See [Config reference](config-reference.md) for fields.
 
 ## Operations
 
@@ -267,4 +205,4 @@ See [Config reference](config-reference.md) for fields.
 
 - TLS termination must be handled outside Augur.
 - Kubernetes manifests are not included.
-- Dashboards and alerts are not included.
+- Dashboards and alerts are starter examples. Tune them for your deployment.

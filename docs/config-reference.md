@@ -10,16 +10,6 @@ Check a config before starting the gateway:
 augur validate --config configs/request-aware.example.yaml
 ```
 
-Explain a request without calling a provider:
-
-```bash
-augur explain --config configs/request-aware.example.yaml --prompt "Say hello." --type chat
-```
-
-`explain` returns JSON with the route, candidates, exclusions, canary decision,
-fallback plan, estimated cost, selected backend, and `reason_summary`.
-`simulate` is an alias for the same command.
-
 ## Top Level
 
 ```yaml
@@ -35,6 +25,7 @@ canary: {}
 tenants: {}
 policy: {}
 budgets: {}
+rate_limit: {}
 ```
 
 ## Server
@@ -252,6 +243,8 @@ gateway is public. The metrics are:
 - `augur_routes_total`: routing picks, labeled by router strategy and backend.
 - `augur_cost_usd_total`: realized cost in USD.
 - `augur_latency_ms`: latency histogram.
+- `augur_quality_score`: sampled quality score histogram.
+- `augur_reward`: bandit reward histogram.
 
 Labels are low cardinality, such as backend and route. The request id is not a
 metric label; it stays on trace spans. A starter Grafana dashboard and example
@@ -320,10 +313,9 @@ learning:
     seed: 11
 ```
 
-Learning is an optional advanced mode. The gateway runs fine without it. Health,
-latency, cost, task type, canary, and fallback all work with any router, so you
-can leave `learning.enabled` off and pick a simple router like `round_robin` or
-`cost_aware`.
+Learning is optional. The gateway runs without it. Health, latency, cost, task
+type, canary, and fallback all work with any router, so you can leave
+`learning.enabled` off and pick a router like `round_robin` or `cost_aware`.
 
 Live learning requires `router.type: "bandit"`. The bandit only ranks the
 candidates the route rules and filters already allow. It cannot pick a backend
@@ -490,7 +482,8 @@ rate_limit:
 ```
 
 When enabled, Augur applies a token-bucket request limit to
-`/v1/chat/completions`, keyed by the tenant from the `X-Augur-Tenant` header.
+`/v1/chat/completions` and `/v1/embeddings`, keyed by the tenant from the
+`X-Augur-Tenant` header.
 `requests_per_second` and `burst` are the default for every tenant, and `tenants`
 overrides specific ones. `burst` defaults to the per-second rate when unset.
 Over-limit requests get HTTP 429 with `Retry-After`. The limit is per process.
