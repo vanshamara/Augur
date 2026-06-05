@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -1185,6 +1186,21 @@ func TestBuildHTTPServerUsesConfig(t *testing.T) {
 	}
 	if server.IdleTimeout != 4*time.Second {
 		t.Fatalf("idle timeout got %v", server.IdleTimeout)
+	}
+}
+
+func TestRedactErrorHidesSensitiveValues(t *testing.T) {
+	err := errors.New("api_key=sk-test secret:top password=hunter2 token=abc OPENAI_API_KEY=real")
+
+	got := redactError(err)
+
+	for _, leaked := range []string{"sk-test", "top", "hunter2", "abc", "real"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("redacted error leaked %q in %q", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "api_key=[redacted]") {
+		t.Fatalf("redacted error got %q", got)
 	}
 }
 

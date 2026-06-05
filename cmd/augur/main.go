@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -32,13 +33,20 @@ import (
 	"github.com/vanshamara/Augur/internal/router"
 )
 
+var sensitiveErrorValue = regexp.MustCompile(`(?i)\b(openai_api_key|anthropic_api_key|augur_gateway_api_keys|api[_-]?key|token|secret|password)\b\s*[:=]\s*[^,\s]+`)
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := run(ctx, os.Args[1:], os.Getenv, os.Stdout); err != nil {
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "augur failed: %s\n", redactError(err))
+		os.Exit(1)
 	}
+}
+
+func redactError(err error) string {
+	return sensitiveErrorValue.ReplaceAllString(err.Error(), "$1=[redacted]")
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdout io.Writer) error {
