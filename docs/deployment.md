@@ -204,7 +204,7 @@ Authorization: Bearer first-client-key
 X-Augur-API-Key: first-client-key
 ```
 
-Auth protects `/v1/chat/completions`, `/debug/backends`, and
+Auth protects `/v1/chat/completions`, `/v1/embeddings`, `/debug/backends`, and
 `/debug/decisions`. Health endpoints stay public.
 
 ## Rate Limiting
@@ -222,8 +222,9 @@ rate_limit:
       burst: 200
 ```
 
-The limit applies to `/v1/chat/completions` and is keyed by the tenant from the
-`X-Augur-Tenant` header, the same identity the tenant cost and in-flight limits
+The limit applies to `/v1/chat/completions` and `/v1/embeddings`, and is keyed by
+the tenant from the `X-Augur-Tenant` header, the same identity the tenant cost
+and in-flight limits
 use. Each tenant gets its own token bucket. `requests_per_second` and `burst` set
 the default for every tenant, and `tenants` overrides specific ones. The default
 tenant covers traffic with no tenant header. `burst` defaults to the per-second
@@ -238,6 +239,8 @@ per-replica limit times the replica count.
 
 ## Runtime Features
 
+- Embeddings: `POST /v1/embeddings`, routed to backends with the `embedding`
+  capability.
 - Streaming: set `"stream": true`.
 - Hedging: configure `data_plane.hedge`.
 - Backend capabilities: set `backends[].capabilities`.

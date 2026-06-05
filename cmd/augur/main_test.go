@@ -724,6 +724,75 @@ func TestHTTPGatewayRoutesCostAwareToCheapestOpenAIBackend(t *testing.T) {
 	}
 }
 
+func TestHTTPGatewayRoutesEmbeddingsToCapableBackend(t *testing.T) {
+	var gotPath string
+	var gotModel string
+	fakeOpenAI := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body struct {
+			Model string `json:"model"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		gotModel = body.Model
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3}}`))
+	}))
+	defer fakeOpenAI.Close()
+
+	client, err := openaiapi.New(openaiapi.Config{
+		BaseURL: fakeOpenAI.URL + "/v1",
+		APIKey:  "test-key",
+		Client:  fakeOpenAI.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	apiServer := commandHTTPTestServer(t, appconfig.App{
+		Router: appconfig.Router{Type: "round_robin"},
+		Backends: []appconfig.Backend{
+			{ID: "chat-only", Model: "model-chat", Capabilities: []core.RequestType{core.Chat}},
+			{ID: "embedder", Model: "model-embed", Capabilities: []core.RequestType{core.Embedding}, InputCostPerToken: 0.000001},
+		},
+	}, client)
+	gatewayServer := httptest.NewServer(apiServer)
+	defer gatewayServer.Close()
+
+	body := `{"model":"augur-embed","input":["embed this"]}`
+	resp, err := gatewayServer.Client().Post(gatewayServer.URL+"/v1/embeddings", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post embeddings: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status got %d body %s", resp.StatusCode, data)
+	}
+	if gotPath != "/v1/embeddings" {
+		t.Fatalf("provider path got %q", gotPath)
+	}
+	if gotModel != "model-embed" {
+		t.Fatalf("embedding routed to model %q, want the embedding-capable backend", gotModel)
+	}
+	if got := resp.Header.Get("X-Augur-Backend"); got != "embedder" {
+		t.Fatalf("backend header got %q", got)
+	}
+
+	var decoded struct {
+		Object string `json:"object"`
+		Data   []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if decoded.Object != "list" || len(decoded.Data) != 1 || len(decoded.Data[0].Embedding) != 2 {
+		t.Fatalf("unexpected embeddings response %+v", decoded)
+	}
+}
+
 type fakeCommandGateway struct{}
 
 func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {

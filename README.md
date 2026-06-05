@@ -1,8 +1,8 @@
 # Augur
 
-Augur is a self-hosted inference gateway. It accepts OpenAI-compatible chat
-requests and routes them across configured model backends using health, latency,
-cost, request shape, and optional learning.
+Augur is a self-hosted inference gateway. It accepts OpenAI-compatible chat and
+embeddings requests and routes them across configured model backends using
+health, latency, cost, request shape, and optional learning.
 
 It is useful for:
 
@@ -18,7 +18,7 @@ Augur is a v0 self-hosted gateway.
 
 Built or mostly built:
 
-- OpenAI-style `/v1/chat/completions` HTTP API
+- OpenAI-style `/v1/chat/completions` and `/v1/embeddings` HTTP API
 - JSON and YAML config
 - static, round-robin, least-loaded, EWMA, cost-aware, P2C, and bandit routers
 - route rules with task, tenant, tier, and candidate backend matching
@@ -173,6 +173,22 @@ and `X-Augur-Attempted-Backends`. When backend prices are configured, Augur adds
 `X-Augur-Estimated-Cost-USD` and `X-Augur-Cost-USD` so you can see the estimated
 and realized cost of the call. Streaming responses include the estimate up
 front; realized streaming cost is known only after the stream ends.
+
+Embeddings go through the same engine. Send them to `/v1/embeddings` and route
+them to embedding-capable backends:
+
+```bash
+curl http://127.0.0.1:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "augur-embed",
+    "input": ["first text", "second text"]
+  }'
+```
+
+The same routing, capability filtering, cost budgets, fallback, canary, and
+decision log apply. Only embedding-capable backends are eligible. Set
+`capabilities: ["embedding"]` on those backends.
 
 Send request-aware hints when the caller knows the workload:
 
@@ -389,9 +405,8 @@ Keep real config files and API keys outside the repo.
 
 Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
 
-- It only speaks the OpenAI-compatible chat API. There is no image, audio, video,
-  or embedding-serving API surface, even though `embedding` exists as a routing
-  task type.
+- It speaks the OpenAI-compatible chat and embeddings APIs. There is no image,
+  audio, or video API surface.
 - It only ships an OpenAI-compatible backend adapter. Any provider you use must
   expose that API shape.
 - It has no built-in TLS and no Kubernetes manifests. It serves Prometheus

@@ -12,6 +12,62 @@ import (
 	"github.com/vanshamara/Augur/internal/openaiapi"
 )
 
+func TestBackendCallsEmbeddingsForEmbeddingRequests(t *testing.T) {
+	var gotPath string
+	var gotInput []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		var body openaiapi.EmbeddingRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotInput = body.Input
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"prompt_tokens":8}}`))
+	}))
+	defer server.Close()
+
+	client, err := openaiapi.New(openaiapi.Config{BaseURL: server.URL, APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	backend, err := New(Config{
+		ID:                 "embedder",
+		Model:              "embed-model",
+		Client:             client,
+		InputCostPerToken:  0.01,
+		OutputCostPerToken: 0.02,
+	})
+	if err != nil {
+		t.Fatalf("new backend: %v", err)
+	}
+
+	resp, err := backend.Call(context.Background(), core.Request{
+		ID:       "req-embed",
+		Inputs:   []string{"embed this"},
+		Features: core.Features{Type: core.Embedding},
+	})
+	if err != nil {
+		t.Fatalf("call backend: %v", err)
+	}
+
+	if gotPath != "/embeddings" {
+		t.Fatalf("path got %q", gotPath)
+	}
+	if len(gotInput) != 1 || gotInput[0] != "embed this" {
+		t.Fatalf("input got %v", gotInput)
+	}
+	if len(resp.Embeddings) != 1 || len(resp.Embeddings[0]) != 3 {
+		t.Fatalf("embeddings got %v", resp.Embeddings)
+	}
+	if resp.CostUSD != 0.08 {
+		t.Fatalf("cost got %v, want 0.08 (input only)", resp.CostUSD)
+	}
+	if resp.OutputTokens != 0 {
+		t.Fatalf("embeddings should report no output tokens, got %d", resp.OutputTokens)
+	}
+}
+
 func TestBackendCallsOpenAICompatibleChat(t *testing.T) {
 	var gotPrompt string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

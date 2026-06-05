@@ -496,6 +496,12 @@ X-Augur-Prompt-Tokens: 820
 
 Supported request types are `chat`, `reasoning`, `coding`, and `embedding`.
 
+`POST /v1/embeddings` takes an OpenAI-style embeddings request, where `input` is a
+string or an array of strings. It always uses the `embedding` request type, so it
+only routes to backends with the `embedding` capability. The same routing, cost
+budgets, fallback, canary, and decision log apply. Embeddings cost is input
+tokens only, so the request cost budget compares against the input cost.
+
 When these values are missing, Augur infers a request type from the prompt. The
 local classifier sends simple or spam-like prompts toward cheaper chat behavior
 and marks coding or reasoning prompts as higher-need work. Headers and metadata

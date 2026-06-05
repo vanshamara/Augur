@@ -133,6 +133,7 @@ func New(config Config) (*Server, error) {
 	mux.HandleFunc("/debug/backends", server.handleAuthenticatedBackendDebug)
 	mux.HandleFunc("/debug/decisions", server.handleAuthenticatedDecisionDebug)
 	mux.HandleFunc("/v1/chat/completions", server.handleAuthenticatedChatCompletions)
+	mux.HandleFunc("/v1/embeddings", server.handleAuthenticatedEmbeddings)
 	if server.metricsHandler != nil {
 		mux.Handle("/metrics", server.metricsHandler)
 	}

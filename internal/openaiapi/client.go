@@ -163,6 +163,70 @@ func (c *Client) ChatCompletion(ctx context.Context, body ChatCompletionRequest)
 	}, nil
 }
 
+type EmbeddingRequest struct {
+	Model          string   `json:"model"`
+	Input          []string `json:"input"`
+	Dimensions     *int     `json:"dimensions,omitempty"`
+	EncodingFormat string   `json:"encoding_format,omitempty"`
+}
+
+type Embedding struct {
+	Vectors      [][]float64
+	PromptTokens int
+}
+
+// Embeddings sends one embeddings request and returns one vector per input.
+func (c *Client) Embeddings(ctx context.Context, body EmbeddingRequest) (Embedding, error) {
+	if body.Model == "" {
+		return Embedding{}, errors.New("model is required")
+	}
+	if len(body.Input) == 0 {
+		return Embedding{}, errors.New("input is required")
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return Embedding{}, err
+	}
+
+	endpoint := c.baseURL.JoinPath("embeddings")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(payload))
+	if err != nil {
+		return Embedding{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return Embedding{}, err
+	}
+	defer resp.Body.Close()
+
+	var decoded embeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return Embedding{}, &APIError{Status: resp.StatusCode}
+		}
+		return Embedding{}, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Embedding{}, decoded.errorValue(resp.StatusCode)
+	}
+	if len(decoded.Data) == 0 {
+		return Embedding{}, errors.New("embeddings returned no data")
+	}
+
+	vectors := make([][]float64, len(decoded.Data))
+	for _, item := range decoded.Data {
+		if item.Index < 0 || item.Index >= len(vectors) {
+			return Embedding{}, errors.New("embeddings returned an out-of-range index")
+		}
+		vectors[item.Index] = item.Embedding
+	}
+	return Embedding{Vectors: vectors, PromptTokens: decoded.Usage.PromptTokens}, nil
+}
+
 func (c *Client) ChatCompletionStream(ctx context.Context, body ChatCompletionRequest) (*ChatCompletionStream, error) {
 	if body.Model == "" {
 		return nil, errors.New("model is required")
@@ -296,6 +360,27 @@ type chatStreamResponse struct {
 }
 
 func (r chatResponse) errorValue(status int) error {
+	if r.Error != nil && r.Error.Message != "" {
+		return &APIError{Status: status, Message: r.Error.Message}
+	}
+	return &APIError{Status: status}
+}
+
+type embeddingResponse struct {
+	Data []struct {
+		Index     int       `json:"index"`
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
+	Usage struct {
+		PromptTokens int `json:"prompt_tokens"`
+	} `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+}
+
+func (r embeddingResponse) errorValue(status int) error {
 	if r.Error != nil && r.Error.Message != "" {
 		return &APIError{Status: status, Message: r.Error.Message}
 	}

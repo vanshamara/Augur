@@ -62,7 +62,16 @@ func (b *Backend) Check(ctx context.Context) error {
 	return b.client.HealthCheck(ctx, b.healthPath)
 }
 
+// Call dispatches by request type so one backend can serve chat and embeddings
+// through the same routing engine.
 func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, error) {
+	if req.Features.Type == core.Embedding {
+		return b.callEmbedding(ctx, req)
+	}
+	return b.callChat(ctx, req)
+}
+
+func (b *Backend) callChat(ctx context.Context, req core.Request) (core.Response, error) {
 	start := time.Now()
 	result, err := b.client.ChatCompletion(ctx, openaiapi.ChatCompletionRequest{
 		Model:       b.model,
@@ -83,6 +92,28 @@ func (b *Backend) Call(ctx context.Context, req core.Request) (core.Response, er
 			LatencyMs:    elapsedMs(start),
 			CostUSD:      cost,
 			OutputTokens: result.CompletionTokens,
+		},
+	}, nil
+}
+
+func (b *Backend) callEmbedding(ctx context.Context, req core.Request) (core.Response, error) {
+	start := time.Now()
+	result, err := b.client.Embeddings(ctx, openaiapi.EmbeddingRequest{
+		Model: b.model,
+		Input: embeddingInputs(req),
+	})
+	if err != nil {
+		return core.Response{RequestID: req.ID, Backend: b.id, Outcome: core.Outcome{LatencyMs: elapsedMs(start), Errored: true}}, err
+	}
+
+	cost := float64(result.PromptTokens) * b.inputCostPerToken
+	return core.Response{
+		RequestID:  req.ID,
+		Backend:    b.id,
+		Embeddings: result.Vectors,
+		Outcome: core.Outcome{
+			LatencyMs: elapsedMs(start),
+			CostUSD:   cost,
 		},
 	}, nil
 }
@@ -163,6 +194,16 @@ func chatMessages(req core.Request) []openaiapi.ChatMessage {
 		messages[i] = openaiapi.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
 	return messages
+}
+
+func embeddingInputs(req core.Request) []string {
+	if len(req.Inputs) > 0 {
+		return req.Inputs
+	}
+	if req.Prompt != "" {
+		return []string{req.Prompt}
+	}
+	return nil
 }
 
 func maxCompletionTokens(req core.Request, fallback int) int {

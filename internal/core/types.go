@@ -31,6 +31,7 @@ type Request struct {
 	UserID              string
 	Prompt              string
 	Messages            []Message
+	Inputs              []string
 	MaxCompletionTokens int
 	Temperature         *float64
 	Features            Features
@@ -58,6 +59,7 @@ type Response struct {
 	FallbackCount     int
 	EstimatedCostUSD  float64
 	OutputText        string
+	Embeddings        [][]float64
 	Outcome
 }
 

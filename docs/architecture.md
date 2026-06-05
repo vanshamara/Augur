@@ -1,8 +1,8 @@
 # Architecture
 
-Augur is a self-hosted Go inference gateway for OpenAI-compatible chat
-requests. It routes requests across configured model backends using operational
-signals, request hints, policy, and optional learning.
+Augur is a self-hosted Go inference gateway for OpenAI-compatible chat and
+embeddings requests. It routes requests across configured model backends using
+operational signals, request hints, policy, and optional learning.
 
 ```text
 client
@@ -16,7 +16,8 @@ client
 ## Request Flow
 
 1. `cmd/augur` loads config and builds the gateway.
-2. `internal/httpapi` parses `/v1/chat/completions` and request-aware hints.
+2. `internal/httpapi` parses `/v1/chat/completions` or `/v1/embeddings` and
+   request-aware hints.
 3. `internal/dataplane` matches route rules and creates the route candidate set.
 4. `internal/dataplane` removes backends that do not support the request type.
 5. `internal/dataplane` applies filters such as active health state, circuit

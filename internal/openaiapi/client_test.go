@@ -10,6 +10,46 @@ import (
 	"testing"
 )
 
+func TestEmbeddingsSendsOpenAICompatibleRequest(t *testing.T) {
+	var gotPath string
+	var gotBody EmbeddingRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"data":[{"index":1,"embedding":[0.3,0.4]},{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL + "/v1", APIKey: "test-key", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	result, err := client.Embeddings(context.Background(), EmbeddingRequest{
+		Model: "embed-model",
+		Input: []string{"first", "second"},
+	})
+	if err != nil {
+		t.Fatalf("embeddings: %v", err)
+	}
+
+	if gotPath != "/v1/embeddings" {
+		t.Fatalf("path got %s", gotPath)
+	}
+	if gotBody.Model != "embed-model" || len(gotBody.Input) != 2 {
+		t.Fatalf("unexpected request body %+v", gotBody)
+	}
+	if result.PromptTokens != 5 || len(result.Vectors) != 2 {
+		t.Fatalf("unexpected result %+v", result)
+	}
+	if result.Vectors[0][0] != 0.1 || result.Vectors[1][0] != 0.3 {
+		t.Fatalf("vectors not ordered by index: %+v", result.Vectors)
+	}
+}
+
 func TestChatCompletionSendsOpenAICompatibleRequest(t *testing.T) {
 	var gotPath string
 	var gotAuth string

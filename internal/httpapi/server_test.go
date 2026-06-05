@@ -1027,6 +1027,78 @@ func TestMetricsEndpointServesHandler(t *testing.T) {
 	}
 }
 
+func TestEmbeddingsRoutesThroughGateway(t *testing.T) {
+	gateway := &fakeGateway{
+		resp: core.Response{
+			RequestID:  "req-embed",
+			Backend:    "embedder",
+			Embeddings: [][]float64{{0.1, 0.2}, {0.3, 0.4}},
+			Outcome:    core.Outcome{CostUSD: 0.0009},
+		},
+	}
+	server := testServer(t, gateway)
+	body := `{"model":"text-embed","input":["first","second"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("X-Request-ID", "req-embed")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if gateway.req.Features.Type != core.Embedding {
+		t.Fatalf("request type got %q, want embedding", gateway.req.Features.Type)
+	}
+	if len(gateway.req.Inputs) != 2 || gateway.req.Inputs[1] != "second" {
+		t.Fatalf("inputs not forwarded: %v", gateway.req.Inputs)
+	}
+	if got := rec.Header().Get("X-Augur-Backend"); got != "embedder" {
+		t.Fatalf("backend header got %q", got)
+	}
+
+	var got embeddingsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got.Object != "list" || got.Model != "text-embed" || len(got.Data) != 2 {
+		t.Fatalf("unexpected embeddings response %+v", got)
+	}
+	if got.Data[0].Object != "embedding" || got.Data[1].Index != 1 || got.Data[1].Embedding[0] != 0.3 {
+		t.Fatalf("unexpected embedding data %+v", got.Data)
+	}
+}
+
+func TestEmbeddingsAcceptsStringInput(t *testing.T) {
+	gateway := &fakeGateway{resp: core.Response{Backend: "embedder", Embeddings: [][]float64{{0.5}}}}
+	server := testServer(t, gateway)
+	body := `{"model":"text-embed","input":"just one"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status got %d body %s", rec.Code, rec.Body.String())
+	}
+	if len(gateway.req.Inputs) != 1 || gateway.req.Inputs[0] != "just one" {
+		t.Fatalf("string input not handled: %v", gateway.req.Inputs)
+	}
+}
+
+func TestEmbeddingsRejectsEmptyInput(t *testing.T) {
+	server := testServer(t, &fakeGateway{})
+	body := `{"model":"text-embed","input":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty input should be rejected, got %d", rec.Code)
+	}
+}
+
 func TestChatCompletionsRateLimited(t *testing.T) {
 	server, err := New(Config{
 		Gateway:     &fakeGateway{resp: core.Response{Backend: "fast", OutputText: "ok"}},
