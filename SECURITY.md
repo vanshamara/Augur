@@ -2,7 +2,8 @@
 
 ## Supported Versions
 
-Augur is pre-1.0. Security fixes are applied to the main branch.
+Augur is in its first public release series. Security fixes are applied to the
+main branch.
 
 ## Reporting a Vulnerability
 
