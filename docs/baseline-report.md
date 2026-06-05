@@ -1,6 +1,6 @@
 # Baseline Router Report
 
-Date: June 5, 2026
+Date: June 4, 2026
 
 The table below was reproduced with `go run ./cmd/compare` on this date and the
 current numbers include the request-shape regime and the bandit router.
