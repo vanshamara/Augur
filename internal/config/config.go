@@ -71,6 +71,9 @@ type OpenAI struct {
 type Backend struct {
 	ID                  core.BackendID     `json:"id"`
 	Model               string             `json:"model"`
+	Provider            string             `json:"provider"`
+	BaseURL             string             `json:"base_url"`
+	APIKeyEnv           string             `json:"api_key_env"`
 	Capabilities        []core.RequestType `json:"capabilities"`
 	HealthPath          string             `json:"health_path"`
 	Timeout             Duration           `json:"timeout"`
@@ -78,6 +81,11 @@ type Backend struct {
 	OutputCostPerToken  float64            `json:"output_cost_per_token"`
 	MaxCompletionTokens int                `json:"max_completion_tokens"`
 }
+
+const (
+	ProviderOpenAI    = "openai"
+	ProviderAnthropic = "anthropic"
+)
 
 type Route struct {
 	Name       string           `json:"name"`
@@ -370,6 +378,15 @@ func (a App) withDefaults() (App, error) {
 			return App{}, fmt.Errorf("duplicate backend id %q", a.Backends[i].ID)
 		}
 		backendIDs[a.Backends[i].ID] = true
+		a.Backends[i].Provider = strings.ToLower(strings.TrimSpace(a.Backends[i].Provider))
+		if a.Backends[i].Provider == "" {
+			a.Backends[i].Provider = ProviderOpenAI
+		}
+		if err := validateProvider(a.Backends[i]); err != nil {
+			return App{}, err
+		}
+		a.Backends[i].BaseURL = strings.TrimSpace(a.Backends[i].BaseURL)
+		a.Backends[i].APIKeyEnv = strings.TrimSpace(a.Backends[i].APIKeyEnv)
 		a.Backends[i].HealthPath = strings.TrimSpace(a.Backends[i].HealthPath)
 		if a.Backends[i].Timeout.Duration < 0 {
 			return App{}, fmt.Errorf("backend %q timeout cannot be negative", a.Backends[i].ID)
@@ -811,6 +828,15 @@ func validateRouteBackends(name string, role string, entries []RouteCandidate, b
 		}
 	}
 	return nil
+}
+
+func validateProvider(backend Backend) error {
+	switch backend.Provider {
+	case ProviderOpenAI, ProviderAnthropic:
+		return nil
+	default:
+		return fmt.Errorf("backend %q has unsupported provider %q", backend.ID, backend.Provider)
+	}
 }
 
 func validateBackendCapabilities(backend Backend) error {

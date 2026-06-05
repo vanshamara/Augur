@@ -70,6 +70,9 @@ openai:
 backends:
   - id: "fast"
     model: "your-model-id"
+    provider: "openai"
+    base_url: ""
+    api_key_env: ""
     capabilities: ["chat", "reasoning", "coding"]
     health_path: "/healthz"
     timeout: "10s"
@@ -80,9 +83,21 @@ backends:
 
 - `id`: route-facing backend name. Defaults to `model` when omitted.
 - `model`: provider model name. Required.
+- `provider`: `openai` (default) or `anthropic`. `openai` covers OpenAI and any
+  OpenAI-compatible server, such as Ollama, vLLM, or LM Studio. `anthropic` uses
+  the Anthropic Messages API.
+- `base_url`: optional per-backend API base URL. It overrides the top-level
+  `openai.base_url`. Point it at a local server like
+  `http://localhost:11434/v1` for Ollama. Anthropic backends default to the
+  Anthropic API when this is empty.
+- `api_key_env`: optional per-backend key environment variable. It overrides the
+  top-level `openai.api_key_env`. OpenAI-compatible local servers usually need no
+  key, so leave the variable unset. Anthropic backends default to
+  `ANTHROPIC_API_KEY`.
 - `capabilities`: optional list of supported request types. Supported values are
   `chat`, `reasoning`, `coding`, and `embedding`. If omitted or empty, the
-  backend is treated as compatible with all current request types.
+  backend is treated as compatible with all current request types. Anthropic
+  backends do not support `embedding`.
 - `health_path`: optional provider health endpoint path. It is called with `GET`
   during active checks. Leave it empty when the provider has no cheap health path.
 - `timeout`: optional per-backend request timeout. It applies before fallback.

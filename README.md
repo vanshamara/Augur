@@ -6,7 +6,7 @@ health, latency, cost, request shape, and optional learning.
 
 It is useful for:
 
-- routing across multiple OpenAI-compatible models
+- routing across OpenAI, Anthropic, and OpenAI-compatible local models
 - enforcing latency, cost, error, quality, and tenant limits
 - sending simple and complex requests to different backend pools
 - testing routing policies with deterministic replay
@@ -29,7 +29,8 @@ Built or mostly built:
 - backend debug output for health, circuit state, latency window, and error rate
 - optional route-decision debug log that explains candidate filtering per request
 - Prometheus metrics at `/metrics` with a starter Grafana dashboard and alert rules
-- OpenAI-compatible backend adapter
+- OpenAI-compatible and Anthropic backend adapters, plus per-backend base URL and
+  key for local servers like Ollama
 - streaming responses
 - optional gateway auth
 - request hints through headers and chat request metadata
@@ -339,6 +340,38 @@ Reading the example:
 See `configs/cost-aware.example.yaml` for a budget-focused config and
 `configs/request-aware.example.yaml` for a learned-routing config.
 
+## Mix Providers And Local Models
+
+Each backend picks its own provider, base URL, and key, so one route can fall
+back across providers or to a local model:
+
+```yaml
+backends:
+  - id: "openai"
+    model: "gpt-4.1-mini"
+  - id: "claude"
+    model: "claude-3-5-sonnet-latest"
+    provider: "anthropic"
+  - id: "local"
+    model: "llama3.1"
+    base_url: "http://localhost:11434/v1"
+routes:
+  - name: "default"
+    candidates:
+      - backend: "openai"
+    fallbacks:
+      - backend: "claude"
+      - backend: "local"
+```
+
+- `provider` is `openai` (default) or `anthropic`. The `openai` adapter also
+  serves any OpenAI-compatible server, such as Ollama, vLLM, or LM Studio.
+- `base_url` points a backend at a specific endpoint. Local servers usually need
+  no key, so leave the key unset.
+- Anthropic uses `ANTHROPIC_API_KEY`. OpenAI uses `OPENAI_API_KEY` unless a
+  backend sets its own `api_key_env`.
+- Anthropic backends serve chat, not embeddings.
+
 ## Explain A Routing Decision
 
 Turn on the decision log:
@@ -407,8 +440,11 @@ Augur is a v0 self-hosted gateway. Know these limits before you rely on it:
 
 - It speaks the OpenAI-compatible chat and embeddings APIs. There is no image,
   audio, or video API surface.
-- It only ships an OpenAI-compatible backend adapter. Any provider you use must
-  expose that API shape.
+- It ships OpenAI-compatible and Anthropic backend adapters. Local and
+  open-source servers like Ollama, vLLM, and LM Studio work through the
+  OpenAI-compatible adapter with a per-backend `base_url`. Anthropic backends do
+  not serve embeddings, and streaming for Anthropic backends is not implemented
+  yet.
 - It has no built-in TLS and no Kubernetes manifests. It serves Prometheus
   metrics and ships a starter Grafana dashboard, but no hosted dashboard. Put it
   behind your own proxy and monitoring.

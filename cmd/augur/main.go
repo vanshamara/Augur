@@ -15,7 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vanshamara/Augur/internal/anthropicapi"
 	"github.com/vanshamara/Augur/internal/backend"
+	anthropicbackend "github.com/vanshamara/Augur/internal/backend/anthropic"
 	openaibackend "github.com/vanshamara/Augur/internal/backend/openai"
 	appconfig "github.com/vanshamara/Augur/internal/config"
 	"github.com/vanshamara/Augur/internal/control"
@@ -138,7 +140,7 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 		return err
 	}
 
-	backends, err := buildBackends(config.Backends, client)
+	backends, err := buildBackends(config, client)
 	if err != nil {
 		return err
 	}
@@ -302,10 +304,32 @@ func parseBackendSpec(value string) (appconfig.Backend, error) {
 	return appconfig.Backend{ID: core.BackendID(id), Model: model}, nil
 }
 
-func buildBackends(specs []appconfig.Backend, client *openaiapi.Client) ([]backend.Backend, error) {
-	backends := make([]backend.Backend, 0, len(specs))
-	for _, spec := range specs {
-		b, err := openaibackend.New(openaibackend.Config{
+// buildBackends builds one adapter per backend. OpenAI-compatible backends reuse
+// the shared client unless they set their own base_url or key, and Anthropic
+// backends get their own client. This is what lets one config route across
+// providers and local servers.
+func buildBackends(config appconfig.App, defaultOpenAI *openaiapi.Client) ([]backend.Backend, error) {
+	backends := make([]backend.Backend, 0, len(config.Backends))
+	for _, spec := range config.Backends {
+		b, err := buildBackend(config, spec, defaultOpenAI)
+		if err != nil {
+			return nil, err
+		}
+		backends = append(backends, b)
+	}
+	return backends, nil
+}
+
+func buildBackend(config appconfig.App, spec appconfig.Backend, defaultOpenAI *openaiapi.Client) (backend.Backend, error) {
+	if spec.Provider == appconfig.ProviderAnthropic {
+		client, err := anthropicapi.New(anthropicapi.Config{
+			BaseURL:   spec.BaseURL,
+			APIKeyEnv: spec.APIKeyEnv,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return anthropicbackend.New(anthropicbackend.Config{
 			ID:                  spec.ID,
 			Model:               spec.Model,
 			Client:              client,
@@ -314,12 +338,37 @@ func buildBackends(specs []appconfig.Backend, client *openaiapi.Client) ([]backe
 			OutputCostPerToken:  spec.OutputCostPerToken,
 			MaxCompletionTokens: spec.MaxCompletionTokens,
 		})
+	}
+
+	client := defaultOpenAI
+	if spec.BaseURL != "" || spec.APIKeyEnv != "" {
+		built, err := openaiapi.New(openaiapi.Config{
+			BaseURL:   firstNonEmpty(spec.BaseURL, config.OpenAI.BaseURL),
+			APIKeyEnv: firstNonEmpty(spec.APIKeyEnv, config.OpenAI.APIKeyEnv),
+		})
 		if err != nil {
 			return nil, err
 		}
-		backends = append(backends, b)
+		client = built
 	}
-	return backends, nil
+	return openaibackend.New(openaibackend.Config{
+		ID:                  spec.ID,
+		Model:               spec.Model,
+		Client:              client,
+		HealthPath:          spec.HealthPath,
+		InputCostPerToken:   spec.InputCostPerToken,
+		OutputCostPerToken:  spec.OutputCostPerToken,
+		MaxCompletionTokens: spec.MaxCompletionTokens,
+	})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type routerBuild struct {

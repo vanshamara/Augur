@@ -832,6 +832,33 @@ func TestParseRejectsNegativeRateLimitTenantOverride(t *testing.T) {
 	}
 }
 
+func TestParseDefaultsProviderToOpenAI(t *testing.T) {
+	app, err := Parse([]byte(`{"backends":[{"model":"model-a"}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if app.Backends[0].Provider != ProviderOpenAI {
+		t.Fatalf("provider got %q, want openai", app.Backends[0].Provider)
+	}
+}
+
+func TestParseAcceptsAnthropicProvider(t *testing.T) {
+	app, err := Parse([]byte(`{"backends":[{"id":"claude","model":"claude-3","provider":"anthropic"}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if app.Backends[0].Provider != ProviderAnthropic {
+		t.Fatalf("provider got %q", app.Backends[0].Provider)
+	}
+}
+
+func TestParseRejectsUnknownProvider(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"model":"model-a","provider":"cohere"}]}`))
+	if err == nil {
+		t.Fatal("unknown provider should fail")
+	}
+}
+
 func TestParseRejectsNegativeRateLimit(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a"}],"rate_limit":{"requests_per_second":-1}}`))
 	if err == nil {

@@ -793,6 +793,89 @@ func TestHTTPGatewayRoutesEmbeddingsToCapableBackend(t *testing.T) {
 	}
 }
 
+func TestHTTPGatewayRoutesToAnthropicBackend(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "test-key")
+	var gotPath string
+	anthropicServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Write([]byte(`{"content":[{"type":"text","text":"claude answer"}],"usage":{"input_tokens":4,"output_tokens":3}}`))
+	}))
+	defer anthropicServer.Close()
+
+	openaiClient, err := openaiapi.New(openaiapi.Config{BaseURL: "http://unused.test/v1", APIKey: "unused"})
+	if err != nil {
+		t.Fatalf("new openai client: %v", err)
+	}
+
+	apiServer := commandHTTPTestServer(t, appconfig.App{
+		Router: appconfig.Router{Type: "round_robin"},
+		Backends: []appconfig.Backend{
+			{ID: "claude", Model: "claude-3", Provider: "anthropic", BaseURL: anthropicServer.URL},
+		},
+	}, openaiClient)
+	gatewayServer := httptest.NewServer(apiServer)
+	defer gatewayServer.Close()
+
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hi"}]}`
+	resp, err := gatewayServer.Client().Post(gatewayServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status got %d body %s", resp.StatusCode, data)
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("anthropic path got %q", gotPath)
+	}
+	if got := resp.Header.Get("X-Augur-Backend"); got != "claude" {
+		t.Fatalf("backend header got %q", got)
+	}
+}
+
+func TestHTTPGatewayRoutesToCustomBaseURLBackend(t *testing.T) {
+	var gotAuth string
+	localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"choices":[{"message":{"content":"local answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	defer localServer.Close()
+
+	unused, err := openaiapi.New(openaiapi.Config{BaseURL: "http://unused.test/v1", APIKey: "unused"})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	apiServer := commandHTTPTestServer(t, appconfig.App{
+		Router: appconfig.Router{Type: "round_robin"},
+		Backends: []appconfig.Backend{
+			{ID: "local", Model: "llama3", BaseURL: localServer.URL + "/v1"},
+		},
+	}, unused)
+	gatewayServer := httptest.NewServer(apiServer)
+	defer gatewayServer.Close()
+
+	body := `{"model":"augur-chat","messages":[{"role":"user","content":"hi"}]}`
+	resp, err := gatewayServer.Client().Post(gatewayServer.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status got %d body %s", resp.StatusCode, data)
+	}
+	if got := resp.Header.Get("X-Augur-Backend"); got != "local" {
+		t.Fatalf("backend header got %q", got)
+	}
+	if gotAuth != "" {
+		t.Fatalf("keyless local backend should send no Authorization header, got %q", gotAuth)
+	}
+}
+
 type fakeCommandGateway struct{}
 
 func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {
@@ -848,7 +931,7 @@ func (s *seenModels) count(model string) int {
 func commandHTTPTestServer(t *testing.T, config appconfig.App, client *openaiapi.Client) http.Handler {
 	t.Helper()
 
-	backends, err := buildBackends(config.Backends, client)
+	backends, err := buildBackends(config, client)
 	if err != nil {
 		t.Fatalf("build backends: %v", err)
 	}

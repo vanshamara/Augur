@@ -10,6 +10,30 @@ import (
 	"testing"
 )
 
+func TestClientWorksWithoutAPIKey(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"local"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	client, err := New(Config{BaseURL: server.URL + "/v1", APIKeyEnv: "AUGUR_UNSET_KEY_ENV", Client: server.Client()})
+	if err != nil {
+		t.Fatalf("new client without a key should not fail: %v", err)
+	}
+	if _, err := client.ChatCompletion(context.Background(), ChatCompletionRequest{
+		Model:    "local-model",
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("chat completion: %v", err)
+	}
+	if gotAuth != "" {
+		t.Fatalf("keyless client should send no Authorization header, got %q", gotAuth)
+	}
+}
+
 func TestEmbeddingsSendsOpenAICompatibleRequest(t *testing.T) {
 	var gotPath string
 	var gotBody EmbeddingRequest

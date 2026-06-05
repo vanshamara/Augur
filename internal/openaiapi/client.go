@@ -99,9 +99,6 @@ func New(config Config) (*Client, error) {
 	if config.APIKey == "" {
 		config.APIKey = os.Getenv(config.APIKeyEnv)
 	}
-	if config.APIKey == "" {
-		return nil, fmt.Errorf("%s is not set", config.APIKeyEnv)
-	}
 	if config.Client == nil {
 		config.Client = &http.Client{Timeout: 60 * time.Second}
 	}
@@ -112,6 +109,15 @@ func New(config Config) (*Client, error) {
 	}
 
 	return &Client{baseURL: baseURL, apiKey: config.APIKey, client: config.Client}, nil
+}
+
+// authorize sets the bearer token when a key is configured. Local servers like
+// Ollama need no key, so an empty key sends no Authorization header.
+func (c *Client) authorize(req *http.Request) {
+	if c.apiKey == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 }
 
 // ChatCompletion sends one chat completion request.
@@ -133,7 +139,7 @@ func (c *Client) ChatCompletion(ctx context.Context, body ChatCompletionRequest)
 	if err != nil {
 		return ChatCompletion{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
@@ -194,7 +200,7 @@ func (c *Client) Embeddings(ctx context.Context, body EmbeddingRequest) (Embeddi
 	if err != nil {
 		return Embedding{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
@@ -246,7 +252,7 @@ func (c *Client) ChatCompletionStream(ctx context.Context, body ChatCompletionRe
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.authorize(req)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -276,7 +282,7 @@ func (c *Client) HealthCheck(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.authorize(req)
 
 	resp, err := c.client.Do(req)
 	if err != nil {
