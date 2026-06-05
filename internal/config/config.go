@@ -844,6 +844,9 @@ func validateBackendCapabilities(backend Backend) error {
 		if !supportedRequestType(capability) {
 			return fmt.Errorf("backend %q has unsupported capability %q", backend.ID, capability)
 		}
+		if backend.Provider == ProviderAnthropic && capability == core.Embedding {
+			return fmt.Errorf("backend %q uses provider %q, which does not support capability %q", backend.ID, backend.Provider, capability)
+		}
 	}
 	return nil
 }

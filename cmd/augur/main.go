@@ -131,6 +131,9 @@ func runServer(ctx context.Context, getenv func(string) string) error {
 	if err != nil {
 		return err
 	}
+	if err := requireOpenAIKeyForDefaultEndpoint(config, getenv); err != nil {
+		return err
+	}
 
 	client, err := openaiapi.New(openaiapi.Config{
 		BaseURL:   config.OpenAI.BaseURL,
@@ -342,11 +345,8 @@ func buildBackend(config appconfig.App, spec appconfig.Backend, defaultOpenAI *o
 
 	client := defaultOpenAI
 	if spec.BaseURL != "" || spec.APIKeyEnv != "" {
-		apiKeyEnv := ""
-		if spec.APIKeyEnv != "" {
-			apiKeyEnv = spec.APIKeyEnv
-		}
-		if spec.BaseURL == "" {
+		apiKeyEnv := spec.APIKeyEnv
+		if apiKeyEnv == "" && spec.BaseURL == "" {
 			apiKeyEnv = config.OpenAI.APIKeyEnv
 		}
 		built, err := openaiapi.New(openaiapi.Config{
@@ -510,9 +510,34 @@ func routeCandidateBackends(candidates []appconfig.RouteCandidate) []core.Backen
 func buildBackendCapabilities(backends []appconfig.Backend) map[core.BackendID][]core.RequestType {
 	out := make(map[core.BackendID][]core.RequestType, len(backends))
 	for _, backend := range backends {
-		out[backend.ID] = append([]core.RequestType(nil), backend.Capabilities...)
+		capabilities := append([]core.RequestType(nil), backend.Capabilities...)
+		if backend.Provider == appconfig.ProviderAnthropic && len(capabilities) == 0 {
+			capabilities = []core.RequestType{core.Chat, core.Reasoning, core.Coding}
+		}
+		out[backend.ID] = capabilities
 	}
 	return out
+}
+
+func requireOpenAIKeyForDefaultEndpoint(config appconfig.App, getenv func(string) string) error {
+	if !usesDefaultOpenAIEndpoint(config.OpenAI.BaseURL) {
+		return nil
+	}
+	for _, backend := range config.Backends {
+		if backend.Provider != appconfig.ProviderOpenAI || backend.BaseURL != "" {
+			continue
+		}
+		apiKeyEnv := firstNonEmpty(backend.APIKeyEnv, config.OpenAI.APIKeyEnv)
+		if strings.TrimSpace(getenv(apiKeyEnv)) == "" {
+			return fmt.Errorf("%s is not set for OpenAI backend %q", apiKeyEnv, backend.ID)
+		}
+	}
+	return nil
+}
+
+func usesDefaultOpenAIEndpoint(baseURL string) bool {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	return baseURL == "" || baseURL == "https://api.openai.com/v1"
 }
 
 func buildBackendPricing(backends []appconfig.Backend) map[core.BackendID]dataplane.BackendPrice {

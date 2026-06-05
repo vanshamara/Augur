@@ -104,6 +104,60 @@ func TestReadConfigLoadsFile(t *testing.T) {
 	}
 }
 
+func TestRequireOpenAIKeyForDefaultEndpoint(t *testing.T) {
+	config, err := appconfig.Parse([]byte(`{"backends":[{"id":"openai","model":"gpt-4.1-mini"}]}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	err = requireOpenAIKeyForDefaultEndpoint(config, func(string) string {
+		return ""
+	})
+	if err == nil {
+		t.Fatal("default OpenAI backend without a key should fail")
+	}
+}
+
+func TestRequireOpenAIKeySkipsLocalAndAnthropicBackends(t *testing.T) {
+	config, err := appconfig.Parse([]byte(`{
+		"backends": [
+			{"id": "local", "model": "llama3", "base_url": "http://localhost:11434/v1"},
+			{"id": "claude", "model": "claude-3", "provider": "anthropic"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	err = requireOpenAIKeyForDefaultEndpoint(config, func(string) string {
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("local and anthropic backends should not require an OpenAI key: %v", err)
+	}
+}
+
+func TestRequireOpenAIKeyUsesBackendKeyEnv(t *testing.T) {
+	config, err := appconfig.Parse([]byte(`{
+		"backends": [
+			{"id": "openai", "model": "gpt-4.1-mini", "api_key_env": "AUGUR_OPENAI_KEY"}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	err = requireOpenAIKeyForDefaultEndpoint(config, func(key string) string {
+		if key == "AUGUR_OPENAI_KEY" {
+			return "test-key"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("backend key env should satisfy startup check: %v", err)
+	}
+}
+
 func TestRunValidateLoadsConfigFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "augur.yaml")
 	if err := os.WriteFile(path, []byte("backends:\n  - id: a\n    model: model-a\nroutes:\n  - name: default\n    candidates:\n      - backend: a\n"), 0o600); err != nil {
@@ -404,6 +458,25 @@ func TestBuildBackendCapabilitiesFromConfig(t *testing.T) {
 	}
 	if len(capabilities["strong"]) != 2 || capabilities["strong"][1] != core.Coding {
 		t.Fatalf("strong capabilities got %+v", capabilities["strong"])
+	}
+}
+
+func TestBuildBackendCapabilitiesKeepsAnthropicOutOfEmbeddings(t *testing.T) {
+	capabilities := buildBackendCapabilities([]appconfig.Backend{
+		{
+			ID:       "claude",
+			Model:    "claude-3",
+			Provider: appconfig.ProviderAnthropic,
+		},
+	})
+
+	for _, capability := range capabilities["claude"] {
+		if capability == core.Embedding {
+			t.Fatalf("anthropic capabilities should not include embedding: %+v", capabilities["claude"])
+		}
+	}
+	if len(capabilities["claude"]) != 3 {
+		t.Fatalf("anthropic capabilities got %+v", capabilities["claude"])
 	}
 }
 
@@ -922,6 +995,56 @@ func TestCustomBaseURLBackendDoesNotInheritGlobalAPIKey(t *testing.T) {
 
 	if gotAuth != "" {
 		t.Fatalf("local backend inherited Authorization header %q", gotAuth)
+	}
+}
+
+func TestBackendAPIKeyEnvOverridesTopLevelKeyEnv(t *testing.T) {
+	t.Setenv("AUGUR_BACKEND_OPENAI_KEY", "backend-key")
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	config, err := appconfig.Parse([]byte(`{
+		"openai": {
+			"base_url": "` + server.URL + `/v1",
+			"api_key_env": "AUGUR_TOP_LEVEL_OPENAI_KEY"
+		},
+		"backends": [
+			{
+				"id": "openai",
+				"model": "gpt-test",
+				"api_key_env": "AUGUR_BACKEND_OPENAI_KEY"
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	defaultClient, err := openaiapi.New(openaiapi.Config{
+		BaseURL: config.OpenAI.BaseURL,
+		APIKey:  "top-level-client-key",
+	})
+	if err != nil {
+		t.Fatalf("new default client: %v", err)
+	}
+
+	backends, err := buildBackends(config, defaultClient)
+	if err != nil {
+		t.Fatalf("build backends: %v", err)
+	}
+	_, err = backends[0].Call(context.Background(), core.Request{
+		ID:     "req-openai",
+		Prompt: "hi",
+	})
+	if err != nil {
+		t.Fatalf("call backend: %v", err)
+	}
+
+	if gotAuth != "Bearer backend-key" {
+		t.Fatalf("authorization header got %q", gotAuth)
 	}
 }
 

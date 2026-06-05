@@ -370,7 +370,9 @@ routes:
   no key, so leave the key unset.
 - Anthropic uses `ANTHROPIC_API_KEY`. OpenAI uses `OPENAI_API_KEY` unless a
   backend sets its own `api_key_env`.
-- Anthropic backends serve chat, not embeddings.
+- Anthropic backends serve chat, not embeddings. When their capabilities are
+  omitted, Augur keeps them out of embedding routes. Listing `embedding` on an
+  Anthropic backend is rejected at startup.
 
 ## Explain A Routing Decision
 

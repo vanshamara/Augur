@@ -97,7 +97,8 @@ backends:
 - `capabilities`: optional list of supported request types. Supported values are
   `chat`, `reasoning`, `coding`, and `embedding`. If omitted or empty, the
   backend is treated as compatible with all current request types. Anthropic
-  backends do not support `embedding`.
+  backends are the exception: omitted capabilities mean `chat`, `reasoning`, and
+  `coding`, and listing `embedding` is rejected at startup.
 - `health_path`: optional provider health endpoint path. It is called with `GET`
   during active checks. Leave it empty when the provider has no cheap health path.
 - `timeout`: optional per-backend request timeout. It applies before fallback.

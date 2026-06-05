@@ -852,6 +852,13 @@ func TestParseAcceptsAnthropicProvider(t *testing.T) {
 	}
 }
 
+func TestParseRejectsAnthropicEmbeddingCapability(t *testing.T) {
+	_, err := Parse([]byte(`{"backends":[{"id":"claude","model":"claude-3","provider":"anthropic","capabilities":["chat","embedding"]}]}`))
+	if err == nil {
+		t.Fatal("anthropic embedding capability should fail")
+	}
+}
+
 func TestParseRejectsUnknownProvider(t *testing.T) {
 	_, err := Parse([]byte(`{"backends":[{"model":"model-a","provider":"cohere"}]}`))
 	if err == nil {
