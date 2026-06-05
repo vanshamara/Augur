@@ -342,9 +342,16 @@ func buildBackend(config appconfig.App, spec appconfig.Backend, defaultOpenAI *o
 
 	client := defaultOpenAI
 	if spec.BaseURL != "" || spec.APIKeyEnv != "" {
+		apiKeyEnv := ""
+		if spec.APIKeyEnv != "" {
+			apiKeyEnv = spec.APIKeyEnv
+		}
+		if spec.BaseURL == "" {
+			apiKeyEnv = config.OpenAI.APIKeyEnv
+		}
 		built, err := openaiapi.New(openaiapi.Config{
 			BaseURL:   firstNonEmpty(spec.BaseURL, config.OpenAI.BaseURL),
-			APIKeyEnv: firstNonEmpty(spec.APIKeyEnv, config.OpenAI.APIKeyEnv),
+			APIKeyEnv: apiKeyEnv,
 		})
 		if err != nil {
 			return nil, err

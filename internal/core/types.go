@@ -32,6 +32,8 @@ type Request struct {
 	Prompt              string
 	Messages            []Message
 	Inputs              []string
+	EmbeddingDimensions *int
+	EmbeddingFormat     string
 	MaxCompletionTokens int
 	Temperature         *float64
 	Features            Features

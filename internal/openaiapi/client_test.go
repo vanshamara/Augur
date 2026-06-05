@@ -34,6 +34,17 @@ func TestClientWorksWithoutAPIKey(t *testing.T) {
 	}
 }
 
+func TestClientDefaultsToOpenAIAPIKeyEnv(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	client, err := New(Config{})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	if client.apiKey != "env-key" {
+		t.Fatalf("api key got %q", client.apiKey)
+	}
+}
+
 func TestEmbeddingsSendsOpenAICompatibleRequest(t *testing.T) {
 	var gotPath string
 	var gotBody EmbeddingRequest

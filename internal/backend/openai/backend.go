@@ -99,8 +99,10 @@ func (b *Backend) callChat(ctx context.Context, req core.Request) (core.Response
 func (b *Backend) callEmbedding(ctx context.Context, req core.Request) (core.Response, error) {
 	start := time.Now()
 	result, err := b.client.Embeddings(ctx, openaiapi.EmbeddingRequest{
-		Model: b.model,
-		Input: embeddingInputs(req),
+		Model:          b.model,
+		Input:          embeddingInputs(req),
+		Dimensions:     req.EmbeddingDimensions,
+		EncodingFormat: req.EmbeddingFormat,
 	})
 	if err != nil {
 		return core.Response{RequestID: req.ID, Backend: b.id, Outcome: core.Outcome{LatencyMs: elapsedMs(start), Errored: true}}, err

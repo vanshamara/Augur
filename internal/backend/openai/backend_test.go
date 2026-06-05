@@ -15,12 +15,14 @@ import (
 func TestBackendCallsEmbeddingsForEmbeddingRequests(t *testing.T) {
 	var gotPath string
 	var gotInput []string
+	var gotBody openaiapi.EmbeddingRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		var body openaiapi.EmbeddingRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
+		gotBody = body
 		gotInput = body.Input
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2,0.3]}],"usage":{"prompt_tokens":8}}`))
@@ -43,9 +45,11 @@ func TestBackendCallsEmbeddingsForEmbeddingRequests(t *testing.T) {
 	}
 
 	resp, err := backend.Call(context.Background(), core.Request{
-		ID:       "req-embed",
-		Inputs:   []string{"embed this"},
-		Features: core.Features{Type: core.Embedding},
+		ID:                  "req-embed",
+		Inputs:              []string{"embed this"},
+		EmbeddingDimensions: intPtr(3),
+		EmbeddingFormat:     "float",
+		Features:            core.Features{Type: core.Embedding},
 	})
 	if err != nil {
 		t.Fatalf("call backend: %v", err)
@@ -57,6 +61,9 @@ func TestBackendCallsEmbeddingsForEmbeddingRequests(t *testing.T) {
 	if len(gotInput) != 1 || gotInput[0] != "embed this" {
 		t.Fatalf("input got %v", gotInput)
 	}
+	if gotBody.Dimensions == nil || *gotBody.Dimensions != 3 || gotBody.EncodingFormat != "float" {
+		t.Fatalf("embedding options got %+v", gotBody)
+	}
 	if len(resp.Embeddings) != 1 || len(resp.Embeddings[0]) != 3 {
 		t.Fatalf("embeddings got %v", resp.Embeddings)
 	}
@@ -66,6 +73,10 @@ func TestBackendCallsEmbeddingsForEmbeddingRequests(t *testing.T) {
 	if resp.OutputTokens != 0 {
 		t.Fatalf("embeddings should report no output tokens, got %d", resp.OutputTokens)
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func TestBackendCallsOpenAICompatibleChat(t *testing.T) {

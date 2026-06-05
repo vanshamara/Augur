@@ -876,6 +876,55 @@ func TestHTTPGatewayRoutesToCustomBaseURLBackend(t *testing.T) {
 	}
 }
 
+func TestCustomBaseURLBackendDoesNotInheritGlobalAPIKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "global-key")
+	config, err := appconfig.Parse([]byte(`
+{
+  "openai": {
+    "api_key_env": "OPENAI_API_KEY"
+  },
+  "backends": [
+    {
+      "id": "local",
+      "model": "llama3",
+      "base_url": "http://localhost:11434/v1"
+    }
+  ]
+}
+`))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	defaultClient, err := openaiapi.New(openaiapi.Config{APIKey: "default-key"})
+	if err != nil {
+		t.Fatalf("new default client: %v", err)
+	}
+
+	var gotAuth string
+	localServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Write([]byte(`{"choices":[{"message":{"content":"local answer"}}],"usage":{"prompt_tokens":2,"completion_tokens":1}}`))
+	}))
+	defer localServer.Close()
+	config.Backends[0].BaseURL = localServer.URL + "/v1"
+
+	backends, err := buildBackends(config, defaultClient)
+	if err != nil {
+		t.Fatalf("build backends: %v", err)
+	}
+	_, err = backends[0].Call(context.Background(), core.Request{
+		ID:     "req-local",
+		Prompt: "hi",
+	})
+	if err != nil {
+		t.Fatalf("call backend: %v", err)
+	}
+
+	if gotAuth != "" {
+		t.Fatalf("local backend inherited Authorization header %q", gotAuth)
+	}
+}
+
 type fakeCommandGateway struct{}
 
 func (fakeCommandGateway) Call(ctx context.Context, req core.Request) (core.Response, error) {

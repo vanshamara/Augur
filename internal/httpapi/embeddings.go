@@ -146,11 +146,13 @@ func (r embeddingsRequest) coreRequest(id string, fallbackID string, tenantID st
 		promptTokens = estimateTokens(joined)
 	}
 	return core.Request{
-		ID:       id,
-		TenantID: tenantID,
-		UserID:   options.UserID,
-		Prompt:   joined,
-		Inputs:   inputs,
+		ID:                  id,
+		TenantID:            tenantID,
+		UserID:              options.UserID,
+		Prompt:              joined,
+		Inputs:              inputs,
+		EmbeddingDimensions: r.Dimensions,
+		EmbeddingFormat:     strings.TrimSpace(r.EncodingFormat),
 		Features: core.Features{
 			PromptTokens:    promptTokens,
 			Type:            core.Embedding,

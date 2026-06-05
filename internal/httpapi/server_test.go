@@ -1037,7 +1037,7 @@ func TestEmbeddingsRoutesThroughGateway(t *testing.T) {
 		},
 	}
 	server := testServer(t, gateway)
-	body := `{"model":"text-embed","input":["first","second"]}`
+	body := `{"model":"text-embed","input":["first","second"],"dimensions":2,"encoding_format":"float"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
 	req.Header.Set("X-Request-ID", "req-embed")
 	rec := httptest.NewRecorder()
@@ -1052,6 +1052,9 @@ func TestEmbeddingsRoutesThroughGateway(t *testing.T) {
 	}
 	if len(gateway.req.Inputs) != 2 || gateway.req.Inputs[1] != "second" {
 		t.Fatalf("inputs not forwarded: %v", gateway.req.Inputs)
+	}
+	if gateway.req.EmbeddingDimensions == nil || *gateway.req.EmbeddingDimensions != 2 || gateway.req.EmbeddingFormat != "float" {
+		t.Fatalf("embedding options not forwarded: %+v", gateway.req)
 	}
 	if got := rec.Header().Get("X-Augur-Backend"); got != "embedder" {
 		t.Fatalf("backend header got %q", got)

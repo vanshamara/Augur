@@ -90,10 +90,11 @@ func (e *APIError) StatusCode() int {
 }
 
 func New(config Config) (*Client, error) {
+	customBaseURL := config.BaseURL != ""
 	if config.BaseURL == "" {
 		config.BaseURL = defaultBaseURL
 	}
-	if config.APIKeyEnv == "" {
+	if config.APIKeyEnv == "" && !customBaseURL {
 		config.APIKeyEnv = defaultAPIKeyEnv
 	}
 	if config.APIKey == "" {
