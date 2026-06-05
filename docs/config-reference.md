@@ -518,7 +518,7 @@ override the inferred values. `X-Augur-Prompt-Tokens` lets callers supply a
 known prompt token count for routing and budget estimates.
 
 Request type controls route matching and backend capability filtering. Augur does
-not yet expose first-class image, audio, or video request APIs.
+not yet expose first-class non-text media request APIs.
 
 The same values can be sent in chat request `metadata`:
 

@@ -101,4 +101,4 @@ Augur includes the local gateway, Dockerfile, config examples, and tests.
 You still need to provide production hosting details such as TLS termination,
 Kubernetes manifests, alert thresholds, and workload-specific tuning.
 
-Augur does not yet expose first-class image, audio, or video routing APIs.
+Augur does not yet expose first-class non-text media routing APIs.
