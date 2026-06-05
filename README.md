@@ -6,6 +6,7 @@
 ![OpenAI Compatible](https://img.shields.io/badge/OpenAI-compatible-412991?logo=openai&logoColor=white)
 ![Anthropic](https://img.shields.io/badge/Anthropic-supported-191919)
 ![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 Calling an LLM is easy. Picking the right backend for each request is the hard
 part. Augur sits in front of OpenAI, Anthropic, and local OpenAI-compatible
